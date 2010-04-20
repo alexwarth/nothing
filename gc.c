@@ -4,17 +4,20 @@
 #include <string.h>
 #include <assert.h>
 
+typedef unsigned char byte_t;
+typedef int           value_t;
+
 #define DEBUG 1
 
 #define callocate(N, T)  ((T *) calloc(N, sizeof(T)))
 
 #define isInteger(X)     ((X) & 1)
-#define IntegerValue(X)  ((X) >> 1)
 #define Integer(X)       (((X) << 1) | 1)
+int IntegerValue(value_t x) { if (DEBUG) assert(isInteger(x)); return x >> 1; }
 
 #define isOop(X)         (((X) & 1) == 0)
-#define OopValue(X)      ((X) >> 1)
 #define Oop(X)           ((X) << 1)
+int OopValue    (value_t x) { if (DEBUG) assert(isOop(x));     return x >> 1; }
 
 void error(char *fmt, ...) {
   va_list args;
@@ -23,9 +26,6 @@ void error(char *fmt, ...) {
   vfprintf(stderr, fmt, args);
   fprintf(stderr, "\n");
 }
-
-typedef unsigned char byte_t;
-typedef int           value_t;
 
 value_t nil, acc/*, internedStrings*/;
 
@@ -41,7 +41,7 @@ size_t OTSize;
 OTEntry *OT, *freeList;
 byte_t *marked;
 
-const size_t OrigOTSize = 16;
+const size_t OrigOTSize = 1;
 
 void growOT(void) {
   size_t  newOTSize    = OTSize > 0 ? OTSize * 2 : OrigOTSize;
@@ -103,9 +103,10 @@ value_t numSlots(value_t oop) {
 
 value_t stack, sp;
 
-void push(value_t v) {
+value_t push(value_t v) {
   slotAtPut(stack, sp, v);
   sp = Integer(IntegerValue(sp) + 1);
+  return v;
 }
 
 value_t pop(void) {
@@ -193,20 +194,24 @@ value_t i_intern(char *s) {
 }
 */
 
+value_t llnode(value_t val, value_t next) {
+  value_t oop = allocate(2);
+  slotAtPut(oop, Integer(0), val);
+  slotAtPut(oop, Integer(1), next);
+  return oop;
+}
+
+value_t addGlobal(value_t val) {
+  return globals = llnode(val, globals);
+}
+
 void init(void) {
   OTSize = 0;
   growOT();
-  globals = allocate(2);
-  nil     = slotAtPut(globals, Integer(0), allocate(0));
-  stack   = slotAtPut(globals, Integer(1), allocate(10240));
-  sp      = Integer(0);
-  acc     = nil;
-}
-
-const value_t IRET = Integer(0), ILD = Integer(1), IADD = Integer(2), ICALL = Integer(3), IPUSH = Integer(4);
-
-void interp(void) {
-    
+  globals = nil = allocate(0);
+  addGlobal(stack = allocate(10240));
+  sp  = Integer(0);
+  acc = nil;
 }
 
 void print(value_t v) {
@@ -231,11 +236,54 @@ void println(value_t v) {
   printf("\n");
 }
 
-value_t llnode(value_t val, value_t next) {
-  value_t oop = allocate(2);
-  slotAtPut(oop, Integer(0), val);
-  slotAtPut(oop, Integer(1), next);
-  return oop;
+enum { IRET, ILD, IADD, ISUB, ICALL, IPUSH, IPOP, ISLOTAT, ISLOTATPUT, IHALT };
+
+void interp(value_t iph, value_t ip) {
+  while (1) {
+    value_t instr = slotAt(iph, ip);
+    if (DEBUG) {
+      printf("executing ");
+      println(instr);
+    }
+    value_t op1, op2;
+    switch (IntegerValue(slotAt(instr, Integer(0)))) {
+      case IADD:  op2 = pop();
+                  op1 = pop();
+                  acc = push(Integer(IntegerValue(op1) + IntegerValue(op2)));
+                  break;
+      case ISUB:  op2 = pop();
+                  op1 = pop();
+                  acc = push(Integer(IntegerValue(op1) - IntegerValue(op2)));
+                  break;
+      case IPOP:  acc = pop();
+                  break;
+      case IPUSH: op1 = slotAt(instr, Integer(1));
+                  acc = push(op1);
+                  break;
+      case IHALT: printf("acc="); println(acc); exit(0);
+      default:    error("unrecognized instruction (opcode = %d)\n", IntegerValue(slotAt(instr, Integer(0))));
+    }
+    ip = Integer(IntegerValue(ip) + 1);
+  }
+}
+
+value_t PUSH(value_t x) {
+  value_t r = allocate(2);
+  slotAtPut(r, Integer(0), Integer(IPUSH));
+  slotAtPut(r, Integer(1), Integer(x));
+  return r;
+}
+
+value_t ADD(void) {
+  value_t r = allocate(1);
+  slotAtPut(r, Integer(0), Integer(IADD));
+  return r;
+}
+
+value_t HALT(void) {
+  value_t r = allocate(1);
+  slotAtPut(r, Integer(0), Integer(IHALT));
+  return r;
 }
 
 /* Print all contents in the object table. */
@@ -262,6 +310,7 @@ void printOT() {
 
 int main(void) {
   init();
+/*
   for (int i = 0; i < 100; i++) allocate(1);
   acc = llnode(Integer(4), nil);
   for (int i = 0; i < 100; i++) allocate(1);
@@ -274,5 +323,13 @@ int main(void) {
   println(acc);
   printf("\n\n\n");
   printOT();
+*/
+  value_t prog = allocate(4);
+  addGlobal(prog);
+  slotAtPut(prog, Integer(0), PUSH(3));
+  slotAtPut(prog, Integer(1), PUSH(4));
+  slotAtPut(prog, Integer(2), ADD());
+  slotAtPut(prog, Integer(3), HALT());
+  interp(prog, Integer(0));
 }
 
