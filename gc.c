@@ -27,7 +27,7 @@ void error(char *fmt, ...) {
 typedef unsigned char byte_t;
 typedef int           value_t;
 
-value_t nil, acc, internedStrings;
+value_t nil, acc/*, internedStrings*/;
 
 typedef struct OTEntry {
   size_t numSlots;
@@ -39,9 +39,9 @@ typedef struct OTEntry {
 
 size_t OTSize;
 OTEntry *OT, *freeList;
-byte_t *marked, *isGlobal;
+byte_t *marked;
 
-const size_t OrigOTSize = 1;
+const size_t OrigOTSize = 16;
 
 void growOT(void) {
   size_t  newOTSize    = OTSize > 0 ? OTSize * 2 : OrigOTSize;
@@ -50,8 +50,7 @@ void growOT(void) {
   OTEntry *newOT       = callocate(newOTSize, OTEntry);
   byte_t  *newMarked   = callocate(newOTSize, byte_t),
           *newIsGlobal = callocate(newOTSize, byte_t);
-  memcpy(newOT,       OT,       sizeof(OTEntry) * OTSize);
-  memcpy(newIsGlobal, isGlobal, sizeof(byte_t)  * OTSize);
+  memcpy(newOT, OT, sizeof(OTEntry) * OTSize);
   for (int i = OTSize; i < newOTSize; i++) {
     newOT[i].numSlots = -1;
     newOT[i].ptr.next = i + 1 < newOTSize ? &newOT[i + 1] : NULL;
@@ -60,13 +59,11 @@ void growOT(void) {
   if (OTSize > 0) {
     free(OT);
     free(marked);
-    free(isGlobal);
   }
   freeList = &newOT[OTSize];
   OTSize   = newOTSize;
   OT       = newOT;
   marked   = newMarked;
-  isGlobal = newIsGlobal;
 }
 
 int mark(value_t oop) {
@@ -104,8 +101,7 @@ value_t numSlots(value_t oop) {
   return Integer(OT[OopValue(oop)].numSlots);
 }
 
-value_t IRET, ILD, IADD, ICALL, IPUSH,
-        /*ip, fp, */stack, sp;
+value_t stack, sp;
 
 void push(value_t v) {
   slotAtPut(stack, sp, v);
@@ -120,13 +116,11 @@ value_t pop(void) {
   return r;
 }
 
+value_t globals;
+
 size_t gc(void) {
   memset(marked, 0, OTSize);
-  int numMarked = mark(nil) + mark(acc) + mark(stack) + mark(internedStrings);
-  for (int i = 0; i < OTSize; i++)
-    if (isGlobal[i]) {
-      numMarked += mark(Oop(i));
-    }
+  int numMarked = mark(acc) + mark(globals);
   for (int i = 0; i < OTSize; i++) {
     if (marked[i])
       continue;
@@ -153,6 +147,7 @@ value_t allocate(size_t numSlots) {
   return Oop(newGuy - OT);
 }
 
+/*
 value_t i_stringify(char *s) {
   int size = strlen(s) + 1, idx = 0;
   push(acc);
@@ -194,32 +189,24 @@ value_t i_intern(char *s) {
   slotAtPut(acc, Integer(1), internedStrings);
   internedStrings = acc;
   acc = pop();
-printf("interned strings is now ");
-println(internedStrings);
   return internedStrings;
 }
+*/
 
 void init(void) {
   OTSize = 0;
   growOT();
-  nil             = allocate(0);
-  acc             = nil;
-  internedStrings = nil;
-  stack = allocate(10240);
-  sp    = Integer(0);
-  IRET  = i_intern("ret");
-  ILD   = i_intern("ld");
-  IADD  = i_intern("add");
-  ICALL = i_intern("call");
-  IPUSH = i_intern("push");
+  globals = allocate(2);
+  nil     = slotAtPut(globals, Integer(0), allocate(0));
+  stack   = slotAtPut(globals, Integer(1), allocate(10240));
+  sp      = Integer(0);
+  acc     = nil;
 }
+
+const value_t IRET = Integer(0), ILD = Integer(1), IADD = Integer(2), ICALL = Integer(3), IPUSH = Integer(4);
 
 void interp(void) {
-  
-}
-
-void makeGlobal(value_t v) {
-  isGlobal[OopValue(v)] = 1;
+    
 }
 
 void print(value_t v) {
@@ -244,12 +231,6 @@ void println(value_t v) {
   printf("\n");
 }
 
-value_t ref(value_t val) {
-  value_t oop = allocate(1);
-  slotAtPut(oop, Integer(0), val);
-  return oop;
-}
-
 value_t llnode(value_t val, value_t next) {
   value_t oop = allocate(2);
   slotAtPut(oop, Integer(0), val);
@@ -263,7 +244,8 @@ void printOT() {
     OTEntry *e = &OT[i];
     printf("%d: ", i);
     if (e->numSlots == -1) {
-      printf("free -> %p\n", e->ptr.next);
+      int next = e->ptr.next - OT;
+      printf("free -> %d\n", next >= 0 ? next : -1);
     } else {
       for (int n = 0; n < e->numSlots; n++) {
         value_t v = e->ptr.slots[n];
@@ -280,25 +262,17 @@ void printOT() {
 
 int main(void) {
   init();
-  println(i_intern("hello"));
-  println(i_intern("world"));
-  println(i_intern("a"));
-  println(i_intern("ab"));
-  println(i_intern("hello"));
-  printOT();
-  return 0;
-/*
-  acc = ref(nil);
   for (int i = 0; i < 100; i++) allocate(1);
-  slotAtPut(acc, Integer(0), llnode(Integer(4), slotAt(acc, Integer(0))));
+  acc = llnode(Integer(4), nil);
   for (int i = 0; i < 100; i++) allocate(1);
-  slotAtPut(acc, Integer(0), llnode(Integer(3), slotAt(acc, Integer(0))));
+  acc = llnode(Integer(3), acc);
   for (int i = 0; i < 100; i++) allocate(1);
-  slotAtPut(acc, Integer(0), llnode(Integer(2), slotAt(acc, Integer(0))));
+  acc = llnode(Integer(2), acc);
   for (int i = 0; i < 100; i++) allocate(1);
-  slotAtPut(acc, Integer(0), llnode(Integer(1), slotAt(acc, Integer(0))));
+  acc = llnode(Integer(1), acc);
   for (int i = 0; i < 100; i++) allocate(1);
   println(acc);
-*/
+  printf("\n\n\n");
+  printOT();
 }
 
