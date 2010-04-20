@@ -257,6 +257,27 @@ value_t llnode(value_t val, value_t next) {
   return oop;
 }
 
+/* Print all contents in the object table. */
+void printOT() {
+  for (int i = 0; i < OTSize; i++) {
+    OTEntry *e = &OT[i];
+    printf("%d: ", i);
+    if (e->numSlots == -1) {
+      printf("free -> %p\n", e->ptr.next);
+    } else {
+      for (int n = 0; n < e->numSlots; n++) {
+        value_t v = e->ptr.slots[n];
+        if (isInteger(v)) {
+          printf("%d, ", IntegerValue(v)); /* Integers are shown as 123 */
+        } else {
+          printf("(%d), ", OopValue(v)); /* References are shown as (123) */
+        }
+      }
+      printf("\n");
+    }
+  }
+}
+
 int main(void) {
   init();
   println(i_intern("hello"));
@@ -264,6 +285,8 @@ int main(void) {
   println(i_intern("a"));
   println(i_intern("ab"));
   println(i_intern("hello"));
+  printOT();
+  return 0;
 /*
   acc = ref(nil);
   for (int i = 0; i < 100; i++) allocate(1);
