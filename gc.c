@@ -238,29 +238,61 @@ void println(value_t v) {
 
 enum { IRET, ILD, IADD, ISUB, ICALL, IPUSH, IPOP, ISLOTAT, ISLOTATPUT, IHALT };
 
-void interp(value_t iph, value_t ip) {
+void printStack(void) {
+  printf("contents of stack: \n");
+  int spv = IntegerValue(sp);
+  while (spv > 0) {
+    spv--;
+    printf("  "); println(slotAt(stack, Integer(spv)));
+  }
+  printf("that's it\n\n");
+}
+
+void interp(value_t iph) {
+  value_t ip = Integer(0), fp = sp;
   while (1) {
     value_t instr = slotAt(iph, ip);
-    if (DEBUG) {
-      printf("executing ");
-      println(instr);
-    }
     value_t op1, op2;
     switch (IntegerValue(slotAt(instr, Integer(0)))) {
-      case IADD:  op2 = pop();
+      case IADD:  if (DEBUG) printf("executing ADD\n");
+                  op2 = pop();
                   op1 = pop();
                   acc = push(Integer(IntegerValue(op1) + IntegerValue(op2)));
                   break;
-      case ISUB:  op2 = pop();
+      case ISUB:  if (DEBUG) printf("executing SUB\n");
+                  op2 = pop();
                   op1 = pop();
                   acc = push(Integer(IntegerValue(op1) - IntegerValue(op2)));
                   break;
-      case IPOP:  acc = pop();
+      case IPOP:  if (DEBUG) printf("executing POP\n");
+                  acc = pop();
                   break;
-      case IPUSH: op1 = slotAt(instr, Integer(1));
+      case IPUSH: if (DEBUG) { printf("executing PUSH "); println(slotAt(instr, Integer(1))); }
+                  op1 = slotAt(instr, Integer(1));
                   acc = push(op1);
                   break;
-      case IHALT: printf("acc="); println(acc); exit(0);
+      case ILD:   if (DEBUG) { printf("executing LD "); println(slotAt(instr, Integer(1))); }
+                  op1 = slotAt(instr, Integer(1));
+                  acc = push(slotAt(stack, Integer(IntegerValue(fp) - IntegerValue(op1))));
+                  break;
+      case ICALL: if (DEBUG) { printf("executing CALL "); print(slotAt(instr, Integer(1))); printf(" "); println(slotAt(instr, Integer(2))); }
+                  push(slotAt(instr, Integer(2)));
+                  push(ip);
+                  push(iph);
+                  fp  = sp;
+                  ip  = Integer(0);
+                  iph = slotAt(instr, Integer(1));
+                  break;
+      case IRET:  if (DEBUG) printf("executing RET\n");
+                  acc = pop();
+                  sp  = fp;
+                  iph = pop();
+                  ip  = pop();
+                  int n = IntegerValue(pop());
+                  while (n-- > 0) pop();
+                  push(acc);
+                  break;
+      case IHALT: printf("executing HALT, acc="); println(acc); exit(0);
       default:    error("unrecognized instruction (opcode = %d)\n", IntegerValue(slotAt(instr, Integer(0))));
     }
     ip = Integer(IntegerValue(ip) + 1);
@@ -271,6 +303,21 @@ value_t PUSH(value_t x) {
   value_t r = allocate(2);
   slotAtPut(r, Integer(0), Integer(IPUSH));
   slotAtPut(r, Integer(1), Integer(x));
+  return r;
+}
+
+value_t LD(value_t offset) {
+  value_t r = allocate(2);
+  slotAtPut(r, Integer(0), Integer(ILD));
+  slotAtPut(r, Integer(1), Integer(offset));
+  return r;
+}
+
+value_t CALL(value_t func, value_t numArgs) {
+  value_t r = allocate(3);
+  slotAtPut(r, Integer(0), Integer(ICALL));
+  slotAtPut(r, Integer(1), func);
+  slotAtPut(r, Integer(2), Integer(numArgs));
   return r;
 }
 
@@ -285,6 +332,13 @@ value_t HALT(void) {
   slotAtPut(r, Integer(0), Integer(IHALT));
   return r;
 }
+
+value_t RET(void) {
+  value_t r = allocate(1);
+  slotAtPut(r, Integer(0), Integer(IRET));
+  return r;
+}
+
 
 /* Print all contents in the object table. */
 void printOT() {
@@ -324,12 +378,20 @@ int main(void) {
   printf("\n\n\n");
   printOT();
 */
+  value_t func = allocate(5);
+  addGlobal(func);
+  slotAtPut(func, Integer(0), nil);
+  slotAtPut(func, Integer(1), LD(5));
+  slotAtPut(func, Integer(2), LD(4));
+  slotAtPut(func, Integer(3), ADD());
+  slotAtPut(func, Integer(4), RET());
   value_t prog = allocate(4);
   addGlobal(prog);
-  slotAtPut(prog, Integer(0), PUSH(3));
-  slotAtPut(prog, Integer(1), PUSH(4));
-  slotAtPut(prog, Integer(2), ADD());
+  slotAtPut(prog, Integer(0), PUSH(4));
+  slotAtPut(prog, Integer(1), PUSH(3));
+  slotAtPut(prog, Integer(2), CALL(func, 2));
   slotAtPut(prog, Integer(3), HALT());
-  interp(prog, Integer(0));
+printStack();
+  interp(prog);
 }
 
