@@ -4,20 +4,24 @@
 #include <string.h>
 #include <assert.h>
 
+// TODO: get rid of acc
+
 typedef unsigned char byte_t;
 typedef int           value_t;
 
+value_t nil, acc, stack, sp, globals;
+
 #define DEBUG 1
 
-#define callocate(N, T)  ((T *) calloc(N, sizeof(T)))
+#define allocate(N, T) ((T *) calloc(N, sizeof(T)))
 
-#define isInteger(X)     ((X) & 1)
-#define Integer(X)       (((X) << 1) | 1)
-int IntegerValue(value_t x) { if (DEBUG) assert(isInteger(x)); return x >> 1; }
+#define isInt(X)       ((X) & 1)
+#define Int(X)         (((X) << 1) | 1)
+#define IntValue(X)    ({ value_t _x = X; if (DEBUG) assert(isInt(_x)); _x >> 1; })
 
-#define isOop(X)         (((X) & 1) == 0)
-#define Oop(X)           ((X) << 1)
-int OopValue    (value_t x) { if (DEBUG) assert(isOop(x));     return x >> 1; }
+#define isOop(X)       (((X) & 1) == 0)
+#define Oop(X)         ((X) << 1)
+#define OopValue(X)    ({ value_t _x = X; if (DEBUG) assert(isOop(_x));     _x >> 1; })
 
 void error(char *fmt, ...) {
   va_list args;
@@ -25,9 +29,8 @@ void error(char *fmt, ...) {
   fprintf(stderr, "error: ");
   vfprintf(stderr, fmt, args);
   fprintf(stderr, "\n");
+  exit(1);
 }
-
-value_t nil, acc/*, internedStrings*/;
 
 typedef struct OTEntry {
   size_t numSlots;
@@ -45,11 +48,10 @@ const size_t OrigOTSize = 1;
 
 void growOT(void) {
   size_t  newOTSize    = OTSize > 0 ? OTSize * 2 : OrigOTSize;
-  if (DEBUG)
-    printf("growOT, new size is %li\n", newOTSize);
-  OTEntry *newOT       = callocate(newOTSize, OTEntry);
-  byte_t  *newMarked   = callocate(newOTSize, byte_t),
-          *newIsGlobal = callocate(newOTSize, byte_t);
+  if (DEBUG) printf("growOT, new size is %li\n", newOTSize);
+  OTEntry *newOT       = allocate(newOTSize, OTEntry);
+  byte_t  *newMarked   = allocate(newOTSize, byte_t),
+          *newIsGlobal = allocate(newOTSize, byte_t);
   memcpy(newOT, OT, sizeof(OTEntry) * OTSize);
   for (int i = OTSize; i < newOTSize; i++) {
     newOT[i].numSlots = -1;
@@ -84,40 +86,38 @@ int mark(value_t oop) {
   return r;
 }
 
+value_t numSlots(value_t oop) {
+  assert(isOop(oop));
+  return Int(OT[OopValue(oop)].numSlots);
+}
+
 value_t slotAt(value_t oop, value_t idx) {
   assert(isOop(oop));
-  assert(isInteger(idx));
-  return OT[OopValue(oop)].ptr.slots[IntegerValue(idx)];
+  assert(isInt(idx));
+  assert(Int(0) <= idx && idx < numSlots(oop));
+  return OT[OopValue(oop)].ptr.slots[IntValue(idx)];
 }
 
 value_t slotAtPut(value_t oop, value_t idx, value_t val) {
   assert(isOop(oop));
-  assert(isInteger(idx));
-  return OT[OopValue(oop)].ptr.slots[IntegerValue(idx)] = val;
+  assert(isInt(idx));
+  assert(Int(0) <= idx && idx < numSlots(oop));
+  return OT[OopValue(oop)].ptr.slots[IntValue(idx)] = val;
 }
-
-value_t numSlots(value_t oop) {
-  assert(isOop(oop));
-  return Integer(OT[OopValue(oop)].numSlots);
-}
-
-value_t stack, sp;
 
 value_t push(value_t v) {
   slotAtPut(stack, sp, v);
-  sp = Integer(IntegerValue(sp) + 1);
+  sp = Int(IntValue(sp) + 1);
   return v;
 }
 
 value_t pop(void) {
-  assert(sp > Integer(0));
-  sp = Integer(IntegerValue(sp) - 1);
+  assert(sp > Int(0));
+  sp = Int(IntValue(sp) - 1);
   value_t r = slotAt(stack, sp);
-  slotAtPut(stack, sp, nil);
+  slotAtPut(stack, sp, Int(0));
   return r;
 }
-
-value_t globals;
 
 size_t gc(void) {
   memset(marked, 0, OTSize);
@@ -130,12 +130,11 @@ size_t gc(void) {
     OT[i].ptr.next  = freeList;
     freeList        = &OT[i];
   }
-  if (DEBUG)
-    printf("GC reclaimed %ld OTEntries\n", OTSize - numMarked);
+  if (DEBUG) printf("GC reclaimed %ld OTEntries\n", OTSize - numMarked);
   return OTSize - numMarked;
 }
 
-value_t allocate(size_t numSlots) {
+value_t mk(size_t numSlots) {
   if (freeList == NULL) {
     gc();
     if (freeList == NULL)
@@ -144,201 +143,139 @@ value_t allocate(size_t numSlots) {
   OTEntry *newGuy = freeList;
   freeList = freeList->ptr.next;
   newGuy->numSlots = numSlots;
-  newGuy->ptr.slots = callocate(numSlots, value_t);
+  newGuy->ptr.slots = allocate(numSlots, value_t);
   return Oop(newGuy - OT);
 }
 
-/*
-value_t i_stringify(char *s) {
-  int size = strlen(s) + 1, idx = 0;
-  push(acc);
-  value_t r = acc = allocate(size);
-  while (1) {
-    slotAtPut(acc, Integer(idx), Integer(*s));
-    if (*s == 0)
-      break;
-    idx++;
-    s++;
-  }
-  acc = pop();
-  return r;
-}
+#define mk1(a)       ({ value_t _r = mk(1); slotAtPut(_r, Int(0), a);                           _r; })
+#define mk2(a, b)    ({ value_t _r = mk(2); slotAtPut(_r, Int(0), a); slotAtPut(_r, Int(1), b); _r; })
+#define mk3(a, b, c) ({ value_t _r = mk(3); slotAtPut(_r, Int(0), a); slotAtPut(_r, Int(1), b); slotAtPut(_r, Int(2), c); _r; })
 
-value_t i_stringCmp(value_t s1, char *s2) {
-  int idx = 0;
-  while (1) {
-    int diff = IntegerValue(slotAt(s1, Integer(idx))) - *s2;
-    if (diff != 0)
-      return Integer(diff);
-    if (*s2 == 0)
-      return Integer(0);
-    idx++;
-    s2++;
-  }
-}
-
-value_t i_intern(char *s) {
-  value_t is = internedStrings;
-  while (is != nil) {
-    if (i_stringCmp(slotAt(is, Integer(0)), s) == Integer(0))
-      return is;
-    is = slotAt(is, Integer(1));
-  }
-  push(acc);
-  acc = allocate(2);
-  slotAtPut(acc, Integer(0), i_stringify(s));
-  slotAtPut(acc, Integer(1), internedStrings);
-  internedStrings = acc;
-  acc = pop();
-  return internedStrings;
-}
-*/
-
-value_t llnode(value_t val, value_t next) {
-  value_t oop = allocate(2);
-  slotAtPut(oop, Integer(0), val);
-  slotAtPut(oop, Integer(1), next);
-  return oop;
-}
-
-value_t addGlobal(value_t val) {
-  return globals = llnode(val, globals);
-}
+#define addGlobal(V) ({ globals = mk2(nil, globals); slotAtPut(globals, Int(0), V); })
 
 void init(void) {
   OTSize = 0;
   growOT();
-  globals = nil = allocate(0);
-  addGlobal(stack = allocate(10240));
-  sp  = Integer(0);
+  globals = nil = mk(0);
+  addGlobal(nil);
+  addGlobal(stack = mk(10240));
+  sp  = Int(0);
   acc = nil;
 }
 
-void print(value_t v) {
+void iprint(value_t v, int n) {
   if (v == nil)
     printf("nil");
-  else if (isInteger(v))
-    printf("%d", IntegerValue(v));
+  else if (isInt(v))
+    printf("%d", IntValue(v));
   else if (isOop(v)) {
     printf("[");
-    for (int i = 0; i < IntegerValue(numSlots(v)); i++) {
-      if (i > 0) printf(", ");
-      print(slotAt(v, Integer(i)));
-    }
+    if (n >= 5)
+      printf("...");
+    else
+      for (int i = 0; i < IntValue(numSlots(v)); i++) {
+        if (i > 0) printf(", ");
+        iprint(slotAt(v, Int(i)), n + 1);
+      }
     printf("]");
   }
   else
     error("print doesn't know how to handle value (%d)\n", v);
 }
 
+void print(value_t v) { iprint(v, 1); }
+
 void println(value_t v) {
   print(v);
   printf("\n");
 }
 
-enum { IRET, ILD, IADD, ISUB, ICALL, IPUSH, IPOP, ISLOTAT, ISLOTATPUT, IHALT };
+enum { IRET, ILD, IADD, ISUB, IMUL, ICALL, IPUSH, IPOP, ISLOTAT, ISLOTATPUT, IJNZ, IHALT };
 
 void printStack(void) {
   printf("contents of stack: \n");
-  int spv = IntegerValue(sp);
+  int spv = IntValue(sp);
   while (spv > 0) {
     spv--;
-    printf("  "); println(slotAt(stack, Integer(spv)));
+    printf("  "); println(slotAt(stack, Int(spv)));
   }
   printf("that's it\n\n");
 }
 
-void interp(value_t iph) {
-  value_t ip = Integer(0), fp = sp;
+value_t fact;
+
+void interp(value_t ipb) {
+  value_t ip = Int(0), fp = sp;
   while (1) {
-    value_t instr = slotAt(iph, ip);
+    value_t instr = slotAt(ipb, ip);
     value_t op1, op2;
-    switch (IntegerValue(slotAt(instr, Integer(0)))) {
+    if (DEBUG) printf("==> "); println(instr);
+    switch (IntValue(slotAt(instr, Int(0)))) {
       case IADD:  if (DEBUG) printf("executing ADD\n");
                   op2 = pop();
                   op1 = pop();
-                  acc = push(Integer(IntegerValue(op1) + IntegerValue(op2)));
+                  acc = push(Int(IntValue(op1) + IntValue(op2)));
                   break;
       case ISUB:  if (DEBUG) printf("executing SUB\n");
                   op2 = pop();
                   op1 = pop();
-                  acc = push(Integer(IntegerValue(op1) - IntegerValue(op2)));
+                  acc = push(Int(IntValue(op1) - IntValue(op2)));
+                  break;
+      case IMUL:  if (DEBUG) printf("executing MUL\n");
+                  op2 = pop();
+                  op1 = pop();
+                  acc = push(Int(IntValue(op1) * IntValue(op2)));
                   break;
       case IPOP:  if (DEBUG) printf("executing POP\n");
                   acc = pop();
                   break;
-      case IPUSH: if (DEBUG) { printf("executing PUSH "); println(slotAt(instr, Integer(1))); }
-                  op1 = slotAt(instr, Integer(1));
+      case IPUSH: if (DEBUG) { printf("executing PUSH "); println(slotAt(instr, Int(1))); }
+                  op1 = slotAt(instr, Int(1));
                   acc = push(op1);
                   break;
-      case ILD:   if (DEBUG) { printf("executing LD "); println(slotAt(instr, Integer(1))); }
-                  op1 = slotAt(instr, Integer(1));
-                  acc = push(slotAt(stack, Integer(IntegerValue(fp) - IntegerValue(op1))));
+      case ILD:   if (DEBUG) { printf("executing LD "); println(slotAt(instr, Int(1))); }
+                  op1 = slotAt(instr, Int(1));
+                  acc = push(slotAt(stack, Int(IntValue(fp) - IntValue(op1))));
                   break;
-      case ICALL: if (DEBUG) { printf("executing CALL "); print(slotAt(instr, Integer(1))); printf(" "); println(slotAt(instr, Integer(2))); }
-                  push(slotAt(instr, Integer(2)));
+      case ICALL: if (DEBUG) { printf("executing CALL "); print(slotAt(instr, Int(1))); printf(" "); println(slotAt(instr, Int(2))); }
+                  push(slotAt(instr, Int(2)));
                   push(ip);
-                  push(iph);
+                  push(ipb);
                   fp  = sp;
-                  ip  = Integer(0);
-                  iph = slotAt(instr, Integer(1));
+                  ip  = Int(0);
+                  ipb = slotAt(instr, Int(1));
                   break;
       case IRET:  if (DEBUG) printf("executing RET\n");
                   acc = pop();
                   sp  = fp;
-                  iph = pop();
+                  ipb = pop();
                   ip  = pop();
-                  int n = IntegerValue(pop());
+                  int n = IntValue(pop());
                   while (n-- > 0) pop();
                   push(acc);
                   break;
+      case IJNZ:  if (DEBUG) printf("executing JNZ\n");
+                  acc = pop();
+                  if (IntValue(acc) != 0)
+                    ip = Int(IntValue(ip) + IntValue(slotAt(instr, Int(1))));
+                  break;
       case IHALT: printf("executing HALT, acc="); println(acc); exit(0);
-      default:    error("unrecognized instruction (opcode = %d)\n", IntegerValue(slotAt(instr, Integer(0))));
+      default:    error("unrecognized instruction (opcode = %d)\n", IntValue(slotAt(instr, Int(0))));
     }
-    ip = Integer(IntegerValue(ip) + 1);
+    printStack();
+    ip = Int(IntValue(ip) + 1);
   }
 }
 
-value_t PUSH(value_t x) {
-  value_t r = allocate(2);
-  slotAtPut(r, Integer(0), Integer(IPUSH));
-  slotAtPut(r, Integer(1), Integer(x));
-  return r;
-}
-
-value_t LD(value_t offset) {
-  value_t r = allocate(2);
-  slotAtPut(r, Integer(0), Integer(ILD));
-  slotAtPut(r, Integer(1), Integer(offset));
-  return r;
-}
-
-value_t CALL(value_t func, value_t numArgs) {
-  value_t r = allocate(3);
-  slotAtPut(r, Integer(0), Integer(ICALL));
-  slotAtPut(r, Integer(1), func);
-  slotAtPut(r, Integer(2), Integer(numArgs));
-  return r;
-}
-
-value_t ADD(void) {
-  value_t r = allocate(1);
-  slotAtPut(r, Integer(0), Integer(IADD));
-  return r;
-}
-
-value_t HALT(void) {
-  value_t r = allocate(1);
-  slotAtPut(r, Integer(0), Integer(IHALT));
-  return r;
-}
-
-value_t RET(void) {
-  value_t r = allocate(1);
-  slotAtPut(r, Integer(0), Integer(IRET));
-  return r;
-}
-
+#define PUSH(X)    mk2(Int(IPUSH), Int(X))
+#define LD(O)      mk2(Int(ILD),   Int(O))
+#define CALL(F, N) mk3(Int(ICALL), F,     Int(N))
+#define HALT       mk1(Int(IHALT))
+#define RET        mk1(Int(IRET))
+#define ADD        mk1(Int(IADD))
+#define SUB        mk1(Int(ISUB))
+#define MUL        mk1(Int(IMUL))
+#define JNZ(O)     mk2(Int(IJNZ),  Int(O))
 
 /* Print all contents in the object table. */
 void printOT() {
@@ -348,14 +285,14 @@ void printOT() {
     if (e->numSlots == -1) {
       int next = e->ptr.next - OT;
       printf("free -> %d\n", next >= 0 ? next : -1);
-    } else {
+    }
+    else {
       for (int n = 0; n < e->numSlots; n++) {
         value_t v = e->ptr.slots[n];
-        if (isInteger(v)) {
-          printf("%d, ", IntegerValue(v)); /* Integers are shown as 123 */
-        } else {
+        if (isInt(v))
+          printf("%d, ", IntValue(v)); /* Ints are shown as 123 */
+        else
           printf("(%d), ", OopValue(v)); /* References are shown as (123) */
-        }
       }
       printf("\n");
     }
@@ -365,33 +302,43 @@ void printOT() {
 int main(void) {
   init();
 /*
-  for (int i = 0; i < 100; i++) allocate(1);
-  acc = llnode(Integer(4), nil);
-  for (int i = 0; i < 100; i++) allocate(1);
-  acc = llnode(Integer(3), acc);
-  for (int i = 0; i < 100; i++) allocate(1);
-  acc = llnode(Integer(2), acc);
-  for (int i = 0; i < 100; i++) allocate(1);
-  acc = llnode(Integer(1), acc);
-  for (int i = 0; i < 100; i++) allocate(1);
+  for (int i = 0; i < 100; i++) mk(1);
+  acc = mk2(Int(4), nil);
+  for (int i = 0; i < 100; i++) mk(1);
+  acc = mk2(Int(3), acc);
+  for (int i = 0; i < 100; i++) mk(1);
+  acc = mk2(Int(2), acc);
+  for (int i = 0; i < 100; i++) mk(1);
+  acc = mk2(Int(1), acc);
+  for (int i = 0; i < 100; i++) mk(1);
   println(acc);
   printf("\n\n\n");
   printOT();
 */
-  value_t func = allocate(5);
-  addGlobal(func);
-  slotAtPut(func, Integer(0), nil);
-  slotAtPut(func, Integer(1), LD(5));
-  slotAtPut(func, Integer(2), LD(4));
-  slotAtPut(func, Integer(3), ADD());
-  slotAtPut(func, Integer(4), RET());
-  value_t prog = allocate(4);
+  fact = mk(12);
+  addGlobal(fact);
+  slotAtPut(fact, Int(0),  nil);
+  slotAtPut(fact, Int(1),  LD(4));
+  slotAtPut(fact, Int(2),  JNZ(2));
+  slotAtPut(fact, Int(3),    PUSH(1));
+  slotAtPut(fact, Int(4),    RET);
+  slotAtPut(fact, Int(5),  LD(4));
+  slotAtPut(fact, Int(6),  LD(4));
+  slotAtPut(fact, Int(7),  PUSH(1));
+  slotAtPut(fact, Int(8),  SUB);
+  slotAtPut(fact, Int(9),  CALL(fact, 1));
+  slotAtPut(fact, Int(10), MUL);
+  slotAtPut(fact, Int(11), RET);
+  value_t prog = mk(3);
   addGlobal(prog);
-  slotAtPut(prog, Integer(0), PUSH(4));
-  slotAtPut(prog, Integer(1), PUSH(3));
-  slotAtPut(prog, Integer(2), CALL(func, 2));
-  slotAtPut(prog, Integer(3), HALT());
-printStack();
+  slotAtPut(prog, Int(0), PUSH(5));
+  slotAtPut(prog, Int(1), CALL(fact, 5));
+  slotAtPut(prog, Int(2), HALT);
+
+print(globals);
+printf("\n\n\n");
+
   interp(prog);
+  return 0;
 }
 

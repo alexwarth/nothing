@@ -1,4 +1,4 @@
-CFLAGS = -std=c99 -Wall
+CFLAGS = -std=c99 -Wall -ggdb
 
 check : gc
 	./gc
