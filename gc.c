@@ -4,6 +4,7 @@
 #include <string.h>
 #include <assert.h>
 
+// TODO: figure out why fact still doesn't work (I think RET is messing up the stack b/c 1st RET is ok, but 2nd gets invalid ipb)
 // TODO: get rid of acc
 
 typedef unsigned char byte_t;
@@ -250,6 +251,8 @@ void interp(value_t ipb) {
                   sp  = fp;
                   ipb = pop();
                   ip  = pop();
+printf("rrr\n");
+assert(isOop(ipb));
                   int n = IntValue(pop());
                   while (n-- > 0) pop();
                   push(acc);
@@ -329,14 +332,12 @@ int main(void) {
   slotAtPut(fact, Int(9),  CALL(fact, 1));
   slotAtPut(fact, Int(10), MUL);
   slotAtPut(fact, Int(11), RET);
+
   value_t prog = mk(3);
   addGlobal(prog);
   slotAtPut(prog, Int(0), PUSH(5));
   slotAtPut(prog, Int(1), CALL(fact, 5));
   slotAtPut(prog, Int(2), HALT);
-
-print(globals);
-printf("\n\n\n");
 
   interp(prog);
   return 0;
