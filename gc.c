@@ -4,15 +4,12 @@
 #include <string.h>
 #include <assert.h>
 
-// TODO: figure out why fact still doesn't work (I think RET is messing up the stack b/c 1st RET is ok, but 2nd gets invalid ipb)
-// TODO: get rid of acc
-
 typedef unsigned char byte_t;
 typedef int           value_t;
 
 value_t nil, acc, stack, sp, globals;
 
-#define DEBUG 1
+#define DEBUG 0
 
 #define allocate(N, T) ((T *) calloc(N, sizeof(T)))
 
@@ -184,12 +181,8 @@ void iprint(value_t v, int n) {
     error("print doesn't know how to handle value (%d)\n", v);
 }
 
-void print(value_t v) { iprint(v, 1); }
-
-void println(value_t v) {
-  print(v);
-  printf("\n");
-}
+void print(value_t v)   { iprint(v, 1); }
+void println(value_t v) { print(v); printf("\n"); }
 
 enum { IRET, ILD, IADD, ISUB, IMUL, ICALL, IPUSH, IPOP, ISLOTAT, ISLOTATPUT, IJNZ, IHALT };
 
@@ -210,7 +203,7 @@ void interp(value_t ipb) {
   while (1) {
     value_t instr = slotAt(ipb, ip);
     value_t op1, op2;
-    if (DEBUG) printf("==> "); println(instr);
+    if (DEBUG) { printf("==> "); println(instr); }
     switch (IntValue(slotAt(instr, Int(0)))) {
       case IADD:  if (DEBUG) printf("executing ADD\n");
                   op2 = pop();
@@ -242,6 +235,7 @@ void interp(value_t ipb) {
                   push(slotAt(instr, Int(2)));
                   push(ip);
                   push(ipb);
+                  push(fp);
                   fp  = sp;
                   ip  = Int(0);
                   ipb = slotAt(instr, Int(1));
@@ -249,10 +243,9 @@ void interp(value_t ipb) {
       case IRET:  if (DEBUG) printf("executing RET\n");
                   acc = pop();
                   sp  = fp;
+                  fp  = pop();
                   ipb = pop();
                   ip  = pop();
-printf("rrr\n");
-assert(isOop(ipb));
                   int n = IntValue(pop());
                   while (n-- > 0) pop();
                   push(acc);
@@ -262,10 +255,9 @@ assert(isOop(ipb));
                   if (IntValue(acc) != 0)
                     ip = Int(IntValue(ip) + IntValue(slotAt(instr, Int(1))));
                   break;
-      case IHALT: printf("executing HALT, acc="); println(acc); exit(0);
+      case IHALT: printf("executing HALT, acc="); println(acc); printStack(); exit(0);
       default:    error("unrecognized instruction (opcode = %d)\n", IntValue(slotAt(instr, Int(0))));
     }
-    printStack();
     ip = Int(IntValue(ip) + 1);
   }
 }
@@ -321,22 +313,22 @@ int main(void) {
   fact = mk(12);
   addGlobal(fact);
   slotAtPut(fact, Int(0),  nil);
-  slotAtPut(fact, Int(1),  LD(4));
-  slotAtPut(fact, Int(2),  JNZ(2));
-  slotAtPut(fact, Int(3),    PUSH(1));
-  slotAtPut(fact, Int(4),    RET);
-  slotAtPut(fact, Int(5),  LD(4));
-  slotAtPut(fact, Int(6),  LD(4));
-  slotAtPut(fact, Int(7),  PUSH(1));
-  slotAtPut(fact, Int(8),  SUB);
-  slotAtPut(fact, Int(9),  CALL(fact, 1));
-  slotAtPut(fact, Int(10), MUL);
+  slotAtPut(fact, Int(1),  LD(5));         // stack: 1
+  slotAtPut(fact, Int(2),  JNZ(2));        // stack: 
+  slotAtPut(fact, Int(3),    PUSH(1));     //   stack: 1
+  slotAtPut(fact, Int(4),    RET);         //   stack: 1
+  slotAtPut(fact, Int(5),  LD(5));         // stack: 1
+  slotAtPut(fact, Int(6),  LD(5));         // stack: 1 1
+  slotAtPut(fact, Int(7),  PUSH(1));       // stack: 1 1 1
+  slotAtPut(fact, Int(8),  SUB);           // stack: 1 0
+  slotAtPut(fact, Int(9),  CALL(fact, 1)); // stack: 1 1
+  slotAtPut(fact, Int(10), MUL);           // stack: 1
   slotAtPut(fact, Int(11), RET);
 
   value_t prog = mk(3);
   addGlobal(prog);
-  slotAtPut(prog, Int(0), PUSH(5));
-  slotAtPut(prog, Int(1), CALL(fact, 5));
+  slotAtPut(prog, Int(0), PUSH(10));       // stack: 1
+  slotAtPut(prog, Int(1), CALL(fact, 1));  // stack: 1
   slotAtPut(prog, Int(2), HALT);
 
   interp(prog);
