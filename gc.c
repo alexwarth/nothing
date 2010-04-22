@@ -186,7 +186,7 @@ void iprint(value_t v, int n) {
 void print(value_t v)   { iprint(v, 1); }
 void println(value_t v) { print(v); printf("\n"); }
 
-enum { IRET, ILD, IARG, IADD, ISUB, IMUL, ICALL, IPUSH, IPOP, IBOX, ISLOTAT, ISLOTATPUT, IJNZ, IHALT };
+enum { IRET, ILD, IARG, IADD, ISUB, IMUL, IMKFUN, ICALL, IPUSH, IPOP, IBOX, ISLOTAT, ISLOTATPUT, IJNZ, IHALT, IFVL, IFV };
 
 void printStack(void) {
   printf("contents of stack: \n");
@@ -203,6 +203,7 @@ value_t fact;
 void interp(value_t ipb) {
   value_t ip = Int(0), fp = sp;
   while (1) {
+printStack();
     value_t instr = slotAt(ipb, ip);
     value_t op1, op2;
     if (DEBUG) { printf("==> "); println(instr); }
@@ -242,16 +243,41 @@ void interp(value_t ipb) {
                   int nArgs = IntValue(slotAt(stack, Int(IntValue(fp) - 4)));
                   push(slotAt(slotAt(stack, Int(IntValue(fp) - 5 - nArgs + IntValue(op1))), Int(0)));
                   break;
+      case IFV:    if (DEBUG) { printf("executing IFV "); println(slotAt(instr, Int(1))); }
+                   op1 = slotAt(instr, Int(1));
+                   nArgs = IntValue(slotAt(stack, Int(IntValue(fp) - 4)));
+                   value_t closure = slotAt(slotAt(stack, Int(IntValue(fp) - 5 - nArgs)), Int(0));
+                   push(slotAt(slotAt(closure, Int(IntValue(op1) + 1)), Int(0)));
+                   break;
+      case IFVL:   if (DEBUG) { printf("executing FVL "); print(slotAt(instr, Int(1))); printf(" "); println(slotAt(instr, Int(2))); }
+                   int level = IntValue(slotAt(instr, Int(1)));
+                   value_t srcFp = fp;
+                   while (level > 1) {
+                     srcFp = slotAt(stack, Int(IntValue(srcFp) - 1));
+                     level--;
+                   }
+                   op1 = slotAt(instr, Int(2));
+                   nArgs = IntValue(slotAt(stack, Int(IntValue(srcFp) - 4)));
+                   push(slotAt(stack, Int(IntValue(srcFp) - 5 - nArgs + IntValue(op1))));
+                   break;
+      case IMKFUN: if (DEBUG) { printf("executing MKFUN "); println(slotAt(instr, Int(1))); }
+                   value_t n = slotAt(instr, Int(1));
+                           closure = mk(IntValue(n) + 1);
+                   for (int i = IntValue(n); i >= 0; i--)
+                     slotAtPut(closure, Int(i), pop());
+                   push(closure);
+                   break;
       case ICALL: if (DEBUG) { printf("executing CALL "); println(slotAt(instr, Int(1))); }
-                  value_t n = slotAt(instr, Int(1)),
-                          f = slotAt(slotAt(stack, Int(IntValue(sp) - 1 - IntValue(n))), Int(0));
+                          n = slotAt(instr, Int(1));
+                  value_t f = slotAt(slotAt(stack, Int(IntValue(sp) - 1 - IntValue(n))), Int(0)),
+                          c = slotAt(f, Int(0));
                   push(n);
                   push(ip);
                   push(ipb);
                   push(fp);
                   fp  = sp;
-                  ip  = Int(0);
-                  ipb = f;
+                  ip  = Int(-1);
+                  ipb = c;
                   break;
       case IRET:  if (DEBUG) printf("executing RET\n");
                   value_t r = pop();
@@ -286,7 +312,10 @@ void interp(value_t ipb) {
 #define MUL        mk1(Int(IMUL))
 #define JNZ(O)     mk2(Int(IJNZ),  Int(O))
 #define ARG(N)     mk2(Int(IARG),  Int(N))
+#define MKFUN(N)   mk2(Int(IMKFUN), Int(N))
 #define BOX        mk1(Int(IBOX))
+#define FV(O)      mk2(Int(IFV), Int(O))
+#define FVL(L, O)  mk3(Int(IFVL), Int(L), Int(O))
 
 /* Print all contents in the object table. */
 void printOT() {
@@ -354,31 +383,39 @@ int main(void) {
   slotAtPut(prog, Int(2), SUB);
   slotAtPut(prog, Int(3), HALT);
 */
- value_t l1 = mk(15);
+ value_t l1 = mk(4);
 addGlobal(l1);
-slotAtPut(l1, Int(0), nil);
-slotAtPut(l1, Int(1), ARG(1));
-slotAtPut(l1, Int(2), JNZ(2));
-slotAtPut(l1, Int(3), PUSH(1));
-slotAtPut(l1, Int(4), RET);
-slotAtPut(l1, Int(5), ARG(1));
-slotAtPut(l1, Int(6), ARG(0));
-slotAtPut(l1, Int(7), BOX);
-slotAtPut(l1, Int(8), ARG(1));
-slotAtPut(l1, Int(9), PUSH(1));
-slotAtPut(l1, Int(10), SUB);
-slotAtPut(l1, Int(11), BOX);
-slotAtPut(l1, Int(12), CALL(1));
-slotAtPut(l1, Int(13), MUL);
-slotAtPut(l1, Int(14), RET);
-value_t prog = mk(6);
+slotAtPut(l1, Int(0), FV(0));
+slotAtPut(l1, Int(1), FV(1));
+slotAtPut(l1, Int(2), ADD);
+slotAtPut(l1, Int(3), RET);
+value_t l2 = mk(5);
+addGlobal(l2);
+slotAtPut(l2, Int(0), mk2(Int(IPUSH), l1));
+slotAtPut(l2, Int(1), FVL(2, 1));
+slotAtPut(l2, Int(2), FVL(1, 1));
+slotAtPut(l2, Int(3), MKFUN(2));
+slotAtPut(l2, Int(4), RET);
+value_t l3 = mk(3);
+addGlobal(l3);
+slotAtPut(l3, Int(0), mk2(Int(IPUSH), l2));
+slotAtPut(l3, Int(1), MKFUN(0));
+slotAtPut(l3, Int(2), RET);
+value_t prog = mk(13);
 addGlobal(prog);
-slotAtPut(prog, Int(0), mk2(Int(IPUSH), l1));
-slotAtPut(prog, Int(1), BOX);
-slotAtPut(prog, Int(2), PUSH(5));
-slotAtPut(prog, Int(3), BOX);
-slotAtPut(prog, Int(4), CALL(1));
-slotAtPut(prog, Int(5), HALT);
+slotAtPut(prog, Int(0), mk2(Int(IPUSH), l3));
+slotAtPut(prog, Int(1), MKFUN(0));
+slotAtPut(prog, Int(2), BOX);
+slotAtPut(prog, Int(3), PUSH(5));
+slotAtPut(prog, Int(4), BOX);
+slotAtPut(prog, Int(5), CALL(1));
+slotAtPut(prog, Int(6), BOX);
+slotAtPut(prog, Int(7), PUSH(6));
+slotAtPut(prog, Int(8), BOX);
+slotAtPut(prog, Int(9), CALL(1));
+slotAtPut(prog, Int(10), BOX);
+slotAtPut(prog, Int(11), CALL(0));
+slotAtPut(prog, Int(12), HALT);
 
   interp(prog);
   return 0;
