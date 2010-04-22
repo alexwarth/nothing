@@ -22,8 +22,9 @@ ometa BMLCompiler {
           | ['expr' [['atom' '-']      comp comp]]           -> this.output.push("SUB")
           | ['expr' [['atom' '*']      comp comp]]           -> this.output.push("MUL")
           | ['expr' [['atom' 'lambda'] lambdaArgsAndBody]]
-          | ['expr' [comp (&anything comp)*:args]]           -> this.output.push("CALL(" + args.length + ")")
+          | ['expr' [comp boxArg (&anything comp boxArg)*:args]] -> this.output.push("CALL(" + args.length + ")")
           | {throw "compilation failed"},
+  boxArg  = {this.output.push("BOX")},
 
   lambdaArgsAndBody = {this.output}:oldOutput
                         {this.output = ["nil"]; this.symtabs.push({_numVars: 0}); this.addArg("thisFunction")}
@@ -60,4 +61,5 @@ BMLCompiler.makeOutput = function() {
 }
 
 tree = BMLParser.matchAll("((lambda (n) (unless n 1 (* n (thisFunction (- n 1))))) 5)", "expr")
-code = BMLCompiler.match(tree, "compile")
+//tree = BMLParser.matchAll("((lambda (x) (+ x 1)) 5)", "expr")
+code = BMLCompiler.match(tree, "compile") 

@@ -112,11 +112,6 @@ value_t push(value_t v) {
   return v;
 }
 
-value_t peek(void) {
-  assert(sp > Int(0));
-  return slotAt(stack, Int(IntValue(sp) - 1));
-}
-
 value_t pop(void) {
   assert(sp > Int(0));
   sp = Int(IntValue(sp) - 1);
@@ -191,7 +186,7 @@ void iprint(value_t v, int n) {
 void print(value_t v)   { iprint(v, 1); }
 void println(value_t v) { print(v); printf("\n"); }
 
-enum { IRET, ILD, IARG, IADD, ISUB, IMUL, ICALL, IPUSH, IPOP, ISLOTAT, ISLOTATPUT, IJNZ, IHALT };
+enum { IRET, ILD, IARG, IADD, ISUB, IMUL, ICALL, IPUSH, IPOP, IBOX, ISLOTAT, ISLOTATPUT, IJNZ, IHALT };
 
 void printStack(void) {
   printf("contents of stack: \n");
@@ -234,6 +229,10 @@ void interp(value_t ipb) {
                   op1 = slotAt(instr, Int(1));
                   push(op1);
                   break;
+      case IBOX:  if (DEBUG) printf("executing BOX\n");
+                  value_t idx = Int(IntValue(sp) - 1);
+                  slotAtPut(stack, idx, mk1(slotAt(stack, idx)));
+                  break;
       case ILD:   if (DEBUG) { printf("executing LD "); println(slotAt(instr, Int(1))); }
                   op1 = slotAt(instr, Int(1));
                   push(slotAt(stack, Int(IntValue(fp) - IntValue(op1))));
@@ -241,11 +240,11 @@ void interp(value_t ipb) {
       case IARG:  if (DEBUG) { printf("executing ARG "); println(slotAt(instr, Int(1))); }
                   op1 = slotAt(instr, Int(1));
                   int nArgs = IntValue(slotAt(stack, Int(IntValue(fp) - 4)));
-                  push(slotAt(stack, Int(IntValue(fp) - 5 - nArgs + IntValue(op1))));
+                  push(slotAt(slotAt(stack, Int(IntValue(fp) - 5 - nArgs + IntValue(op1))), Int(0)));
                   break;
       case ICALL: if (DEBUG) { printf("executing CALL "); println(slotAt(instr, Int(1))); }
                   value_t n = slotAt(instr, Int(1)),
-                          f = slotAt(stack, Int(IntValue(sp) - 1 - IntValue(n)));
+                          f = slotAt(slotAt(stack, Int(IntValue(sp) - 1 - IntValue(n))), Int(0));
                   push(n);
                   push(ip);
                   push(ipb);
@@ -287,6 +286,7 @@ void interp(value_t ipb) {
 #define MUL        mk1(Int(IMUL))
 #define JNZ(O)     mk2(Int(IJNZ),  Int(O))
 #define ARG(N)     mk2(Int(IARG),  Int(N))
+#define BOX        mk1(Int(IBOX))
 
 /* Print all contents in the object table. */
 void printOT() {
@@ -354,7 +354,7 @@ int main(void) {
   slotAtPut(prog, Int(2), SUB);
   slotAtPut(prog, Int(3), HALT);
 */
- value_t l1 = mk(13);
+ value_t l1 = mk(15);
 addGlobal(l1);
 slotAtPut(l1, Int(0), nil);
 slotAtPut(l1, Int(1), ARG(1));
@@ -363,18 +363,22 @@ slotAtPut(l1, Int(3), PUSH(1));
 slotAtPut(l1, Int(4), RET);
 slotAtPut(l1, Int(5), ARG(1));
 slotAtPut(l1, Int(6), ARG(0));
-slotAtPut(l1, Int(7), ARG(1));
-slotAtPut(l1, Int(8), PUSH(1));
-slotAtPut(l1, Int(9), SUB);
-slotAtPut(l1, Int(10), CALL(1));
-slotAtPut(l1, Int(11), MUL);
-slotAtPut(l1, Int(12), RET);
-value_t prog = mk(4);
+slotAtPut(l1, Int(7), BOX);
+slotAtPut(l1, Int(8), ARG(1));
+slotAtPut(l1, Int(9), PUSH(1));
+slotAtPut(l1, Int(10), SUB);
+slotAtPut(l1, Int(11), BOX);
+slotAtPut(l1, Int(12), CALL(1));
+slotAtPut(l1, Int(13), MUL);
+slotAtPut(l1, Int(14), RET);
+value_t prog = mk(6);
 addGlobal(prog);
 slotAtPut(prog, Int(0), mk2(Int(IPUSH), l1));
-slotAtPut(prog, Int(1), PUSH(5));
-slotAtPut(prog, Int(2), CALL(1));
-slotAtPut(prog, Int(3), HALT);
+slotAtPut(prog, Int(1), BOX);
+slotAtPut(prog, Int(2), PUSH(5));
+slotAtPut(prog, Int(3), BOX);
+slotAtPut(prog, Int(4), CALL(1));
+slotAtPut(prog, Int(5), HALT);
 
   interp(prog);
   return 0;
