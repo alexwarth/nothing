@@ -4,6 +4,9 @@
 #include <string.h>
 #include <assert.h>
 
+// TODO: add IJZ, IEQ, INEQ, ...
+// TODO: make closures work
+
 typedef unsigned char byte_t;
 typedef int           value_t;
 
@@ -241,8 +244,9 @@ void interp(value_t ipb) {
                   push(slotAt(stack, Int(IntValue(fp) - 5 - nArgs + IntValue(op1))));
                   break;
       case ICALL: if (DEBUG) { printf("executing CALL "); println(slotAt(instr, Int(1))); }
-                  value_t f = peek();
-                  push(slotAt(instr, Int(1)));
+                  value_t n = slotAt(instr, Int(1)),
+                          f = slotAt(stack, Int(IntValue(sp) - 1 - IntValue(n)));
+                  push(n);
                   push(ip);
                   push(ipb);
                   push(fp);
@@ -256,9 +260,9 @@ void interp(value_t ipb) {
                   fp  = pop();
                   ipb = pop();
                   ip  = pop();
-                  int n = IntValue(pop());
-                  printf("the function was "); println(pop()); // the function
+                  n   = IntValue(pop());
                   while (n-- > 0) pop();
+                  printf("the function was "); println(pop()); // the function
                   push(r);
                   break;
       case IJNZ:  if (DEBUG) printf("executing JNZ\n");
@@ -350,22 +354,27 @@ int main(void) {
   slotAtPut(prog, Int(2), SUB);
   slotAtPut(prog, Int(3), HALT);
 */
-
- value_t l1 = mk(5);
+ value_t l1 = mk(13);
 addGlobal(l1);
 slotAtPut(l1, Int(0), nil);
-slotAtPut(l1, Int(1), ARG(0));
-slotAtPut(l1, Int(2), ARG(1));
-slotAtPut(l1, Int(3), ADD);
+slotAtPut(l1, Int(1), ARG(1));
+slotAtPut(l1, Int(2), JNZ(2));
+slotAtPut(l1, Int(3), PUSH(1));
 slotAtPut(l1, Int(4), RET);
-value_t prog = mk(5);
+slotAtPut(l1, Int(5), ARG(1));
+slotAtPut(l1, Int(6), ARG(0));
+slotAtPut(l1, Int(7), ARG(1));
+slotAtPut(l1, Int(8), PUSH(1));
+slotAtPut(l1, Int(9), SUB);
+slotAtPut(l1, Int(10), CALL(1));
+slotAtPut(l1, Int(11), MUL);
+slotAtPut(l1, Int(12), RET);
+value_t prog = mk(4);
 addGlobal(prog);
-slotAtPut(prog, Int(0), PUSH(3));
-slotAtPut(prog, Int(1), PUSH(4));
-slotAtPut(prog, Int(2), mk2(Int(IPUSH), l1));
-slotAtPut(prog, Int(3), CALL(2));
-slotAtPut(prog, Int(4), HALT);
-
+slotAtPut(prog, Int(0), mk2(Int(IPUSH), l1));
+slotAtPut(prog, Int(1), PUSH(5));
+slotAtPut(prog, Int(2), CALL(1));
+slotAtPut(prog, Int(3), HALT);
 
   interp(prog);
   return 0;
