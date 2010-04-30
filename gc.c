@@ -4,9 +4,11 @@
 #include <string.h>
 #include <assert.h>
 
+// TODO: make iLd and iSt into helper functions, not instructions (shouldn't push/pop to/from stack)
+ 
 // Stack Layout:       ... local vars, etc.
 //               fp -> oldFp
-//                     oldIbp
+//                     oldIpb
 //                     oldIp
 //                     nArgs
 //                     arg(n)
@@ -214,43 +216,53 @@ Instruction(iBox, _)           return iPush(1, mk1(iPop(1, nil))); }
 Instruction(iUnbox, _)         return iPush(1, slotAt(iPop(1, nil), Int(0))); }
 
 Instruction(iLd, offset)       return iPush(1, slotAt(stack, Int(IntValue(fp) - IntValue(offset)))); }
+Instruction(iSt, offset)       return slotAtPut(stack, Int(IntValue(fp) - IntValue(offset)), iPop(1, nil)); }
 
-Instruction(iArg, n)           iLd(1, Int(4));
-                               int nArgs = IntValue(iPop(1, nil));
-                               return iLd(1, Int(5 + nArgs - IntValue(n))); }
+Instruction(iArg, n)           return iLd(1, Int(-IntValue(n))); }
 
-Instruction(iFv, n)            iLd(1, Int(4));
-                               int nArgs = IntValue(iPop(1, nil));
-                               iLd(1, Int(5 + nArgs));
-                               iUnbox(1, nil);
+Instruction(iFv, n)            iLd(1, Int(0)); // push the boxed closure
+                               iUnbox(1, nil); // unbox it
                                value_t closure = iPop(1, nil);
                                return iPush(1, slotAt(closure, Int(IntValue(n) + 1))); }
+
+Instruction(iStVar, _)         value_t val = iPop(1, nil);
+                               return slotAtPut(iPop(1, nil), Int(0), val); }
 
 Instruction(iMkFun, nFreeVars) value_t closure = mk(IntValue(nFreeVars) + 1);
                                for (int i = IntValue(nFreeVars); i >= 0; i--)
                                  slotAtPut(closure, Int(i), iPop(1, nil));
                                return iPush(1, closure); }
 
-Instruction(iCall, nArgs)      iPush(1, slotAt(stack, Int(IntValue(sp) - 1 - IntValue(nArgs))));
-                               iUnbox(1, nil); // get the closure out of its "box"
-                               iUnbox(1, nil); // get the code out of the closure (it's in the 1st slot of the closure)
-                               value_t code = iPop(1, nil);
-                               iPush(1, nArgs);
-                               iPush(1, ip);
+Instruction(iPrepCall, _)      iPush(1, nil); // make room for ip
                                iPush(1, ipb);
                                iPush(1, fp);
-                               fp  = sp;
+                               iPush(1, nil); // make room for nArgs
+                               return nil; }
+
+Instruction(iCall, nArgs)      iPush(1, slotAt(stack, Int(IntValue(sp) - 1 - IntValue(nArgs)))); // boxed closure
+                               iUnbox(1, nil);                                                   // unbox closure
+                               iUnbox(1, nil);                                                   // get the code out of the closure
+                               ipb = iPop(1, nil);
+                               fp  = Int(IntValue(sp) - IntValue(nArgs) - 1);
+                               iPush(1, nArgs);
+                               iSt(1, Int(1));
+                               iPush(1, ip);
+                               iSt(1, Int(4));
                                ip  = Int(-1);
-                               ipb = code;
+                               return nil; }
+
+Instruction(iTCall, newNArgs)  for (int i = IntValue(newNArgs); i >= 0; i--)
+                                 iSt(1, Int(-i));
+                               ipb = slotAt(slotAt(slotAt(stack, fp), Int(0)), Int(0));
+                               ip  = Int(-1);
+                               sp  = Int(IntValue(fp) + IntValue(newNArgs) + 1);
                                return nil; }
 
 Instruction(iRet, _)           value_t r = iPop(1, nil);
-                               sp    = fp;
+                               sp    = Int(IntValue(fp) - 1);
                                fp    = iPop(1, nil);
                                ipb   = iPop(1, nil);
                                ip    = iPop(1, nil);
-                               int n = IntValue(iPop(1, nil));
-                               while (n-- >= 0) iPop(1, nil); // pop nArgs and function
                                return iPush(1, r); }
 
 Instruction(iJmp, n)           ip = Int(IntValue(ip) + IntValue(n)); return nil; }
@@ -258,9 +270,10 @@ Instruction(iJz,  n)           return IntValue(iPop(1, nil)) == 0 ? iJmp(1, n) :
 Instruction(iJnz, n)           return IntValue(iPop(1, nil)) != 0 ? iJmp(1, n) : nil; }
 
 enum
-  {oRet, oLD, oArg, oFV, oAdd, oSub, oMul, oMkFun, oCall, oPush, oPop, oBox, oUnbox, oEq, oJmp, oJZ, oJNZ, oHalt};
+  {oArg, oFV, oStVar, oEq, oAdd, oSub, oMul, oMkFun, oPrepCall, oCall, oTCall, oRet, oPush, oPop, oBox, oUnbox, oJmp, oJZ, oJNZ,
+   oHalt};
 value_t (*jumpTable[])(int, value_t) =
-  {iRet, iLd, iArg, iFv, iAdd, iSub, iMul, iMkFun, iCall, iPush, iPop, iBox, iUnbox, iEq, iJmp, iJz, iJnz};
+  {iArg, iFv, iStVar, iEq, iAdd, iSub, iMul, iMkFun, iPrepCall, iCall, iTCall, iRet, iPush, iPop, iBox, iUnbox, iJmp, iJz, iJnz};
 
 void interp(value_t prog) {
   fp  = sp;
@@ -279,22 +292,25 @@ void interp(value_t prog) {
   }
 }
 
-#define Push(X)  mk2(Int(oPush),  Int(X))
-#define MkFun(N) mk2(Int(oMkFun), Int(N))
-#define Call(N)  mk2(Int(oCall),  Int(N))
-#define Ret      mk2(Int(oRet),   nil)
-#define Arg(N)   mk2(Int(oArg),   Int(N))
-#define FV(O)    mk2(Int(oFV),    Int(O))
-#define Halt     mk2(Int(oHalt),  nil)
-#define Eq       mk2(Int(oEq),    nil)
-#define Add      mk2(Int(oAdd),   nil)
-#define Sub      mk2(Int(oSub),   nil)
-#define Mul      mk2(Int(oMul),   nil)
-#define Box      mk2(Int(oBox),   nil)
-#define Unbox    mk2(Int(oUnbox), nil)
-#define Jmp(O)   mk2(Int(oJmp),   Int(O))
-#define JZ(O)    mk2(Int(oJZ),    Int(O))
-#define JNZ(O)   mk2(Int(oJNZ),   Int(O))
+#define Push(X)  mk2(Int(oPush),     Int(X))
+#define MkFun(N) mk2(Int(oMkFun),    Int(N))
+#define PrepCall mk2(Int(oPrepCall), nil)
+#define Call(N)  mk2(Int(oCall),     Int(N))
+#define TCall(N) mk2(Int(oTCall),    Int(N))
+#define Ret      mk2(Int(oRet),      nil)
+#define Arg(N)   mk2(Int(oArg),      Int(N))
+#define FV(O)    mk2(Int(oFV),       Int(O))
+#define StVar    mk2(Int(oStVar),    nil)
+#define Halt     mk2(Int(oHalt),     nil)
+#define Eq       mk2(Int(oEq),       nil)
+#define Add      mk2(Int(oAdd),      nil)
+#define Sub      mk2(Int(oSub),      nil)
+#define Mul      mk2(Int(oMul),      nil)
+#define Box      mk2(Int(oBox),      nil)
+#define Unbox    mk2(Int(oUnbox),    nil)
+#define Jmp(O)   mk2(Int(oJmp),      Int(O))
+#define JZ(O)    mk2(Int(oJZ),       Int(O))
+#define JNZ(O)   mk2(Int(oJNZ),      Int(O))
 
 /* Print all contents in the object table. */
 void printOT() {
@@ -334,59 +350,46 @@ int main(void) {
   printState();
 */
 
- value_t l1 = mk(9);
+ value_t l1 = mk(24);
 addGlobal(l1);
-slotAtPut(l1, Int(0), FV(0));
+slotAtPut(l1, Int(0), Arg(1));
 slotAtPut(l1, Int(1), Unbox);
-slotAtPut(l1, Int(2), FV(1));
-slotAtPut(l1, Int(3), Unbox);
-slotAtPut(l1, Int(4), FV(2));
-slotAtPut(l1, Int(5), Unbox);
-slotAtPut(l1, Int(6), Add);
-slotAtPut(l1, Int(7), Add);
-slotAtPut(l1, Int(8), Ret);
-value_t l2 = mk(6);
-addGlobal(l2);
-slotAtPut(l2, Int(0), mk2(Int(oPush), l1));
-slotAtPut(l2, Int(1), FV(0));
-slotAtPut(l2, Int(2), FV(1));
-slotAtPut(l2, Int(3), Arg(1));
-slotAtPut(l2, Int(4), MkFun(3));
-slotAtPut(l2, Int(5), Ret);
-value_t l3 = mk(5);
-addGlobal(l3);
-slotAtPut(l3, Int(0), mk2(Int(oPush), l2));
-slotAtPut(l3, Int(1), FV(0));
-slotAtPut(l3, Int(2), Arg(1));
-slotAtPut(l3, Int(3), MkFun(2));
-slotAtPut(l3, Int(4), Ret);
-value_t l4 = mk(4);
-addGlobal(l4);
-slotAtPut(l4, Int(0), mk2(Int(oPush), l3));
-slotAtPut(l4, Int(1), Arg(1));
-slotAtPut(l4, Int(2), MkFun(1));
-slotAtPut(l4, Int(3), Ret);
-value_t prog = mk(17);
+slotAtPut(l1, Int(2), Push(0));
+slotAtPut(l1, Int(3), Eq);
+slotAtPut(l1, Int(4), JZ(3));
+slotAtPut(l1, Int(5), Arg(2));
+slotAtPut(l1, Int(6), Unbox);
+slotAtPut(l1, Int(7), Jmp(15));
+slotAtPut(l1, Int(8), Arg(0));
+slotAtPut(l1, Int(9), Unbox);
+slotAtPut(l1, Int(10), Box);
+slotAtPut(l1, Int(11), Arg(1));
+slotAtPut(l1, Int(12), Unbox);
+slotAtPut(l1, Int(13), Push(1));
+slotAtPut(l1, Int(14), Sub);
+slotAtPut(l1, Int(15), Box);
+slotAtPut(l1, Int(16), Arg(2));
+slotAtPut(l1, Int(17), Unbox);
+slotAtPut(l1, Int(18), Arg(1));
+slotAtPut(l1, Int(19), Unbox);
+slotAtPut(l1, Int(20), Mul);
+slotAtPut(l1, Int(21), Box);
+slotAtPut(l1, Int(22), TCall(2));
+slotAtPut(l1, Int(23), Ret);
+value_t prog = mk(10);
 addGlobal(prog);
-slotAtPut(prog, Int(0), mk2(Int(oPush), l4));
-slotAtPut(prog, Int(1), MkFun(0));
-slotAtPut(prog, Int(2), Box);
-slotAtPut(prog, Int(3), Push(1));
-slotAtPut(prog, Int(4), Box);
-slotAtPut(prog, Int(5), Call(1));
-slotAtPut(prog, Int(6), Box);
-slotAtPut(prog, Int(7), Push(2));
-slotAtPut(prog, Int(8), Box);
-slotAtPut(prog, Int(9), Call(1));
-slotAtPut(prog, Int(10), Box);
-slotAtPut(prog, Int(11), Push(3));
-slotAtPut(prog, Int(12), Box);
-slotAtPut(prog, Int(13), Call(1));
-slotAtPut(prog, Int(14), Box);
-slotAtPut(prog, Int(15), Call(0));
-slotAtPut(prog, Int(16), Halt);
+slotAtPut(prog, Int(0), PrepCall);
+slotAtPut(prog, Int(1), mk2(Int(oPush), l1));
+slotAtPut(prog, Int(2), MkFun(0));
+slotAtPut(prog, Int(3), Box);
+slotAtPut(prog, Int(4), Push(5));
+slotAtPut(prog, Int(5), Box);
+slotAtPut(prog, Int(6), Push(1));
+slotAtPut(prog, Int(7), Box);
+slotAtPut(prog, Int(8), Call(2));
+slotAtPut(prog, Int(9), Halt);
 
-  interp(prog);
+interp(prog);
   return 0;
 }
 

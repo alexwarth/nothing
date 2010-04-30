@@ -7,33 +7,41 @@ ometa BMLParser <: Parser {
 }
 
 ometa BMLCompiler {
-  compile          = comp                                            -> this.makeOutput(),
-  comp             = ['num' anything:n]                                 emit("Push(" + n + ")")
-                   | ['atom' anything:n]                                emit(this.lookup(n)) emit("Unbox")
+  compile          = comp                                               -> this.makeOutput(),
+  builtIn          = ['atom' ('if' | '=' | '+' | '-' | '*' | 'lambda')],
+  comp             = ['num' anything:n]                                    emit("Push(" + n + ")")
+                   | ['atom' anything:n]                                   emit(this.lookup(n)) emit("Unbox")
                    | ['expr' [['atom' 'if']     comp
-                              blankInstr:jzIdx  comp                    emitAt(jzIdx,  "JZ("  + (this.ic() - jzIdx)      + ")")
-                              blankInstr:jmpIdx comp             ]]     emitAt(jmpIdx, "Jmp(" + (this.ic() - jmpIdx - 1) + ")")
-                   | ['expr' [['atom' '='     ] comp comp        ]]     emit("Eq")
-                   | ['expr' [['atom' '+'     ] comp comp        ]]     emit("Add")
-                   | ['expr' [['atom' '-'     ] comp comp        ]]     emit("Sub")
-                   | ['expr' [['atom' '*'     ] comp comp        ]]     emit("Mul")
-                   | ['expr' [['atom' 'lambda'] lambda           ]]
-                   | ['expr' [comp box (&anything comp box)*:args]]     emit("Call(" + args.length + ")")
+                              blankInstr:jzIdx  comp                       emitAt(jzIdx,  "JZ("  + (this.ic() - jzIdx)      + ")")
+                              blankInstr:jmpIdx comp              ]]       emitAt(jmpIdx, "Jmp(" + (this.ic() - jmpIdx - 1) + ")")
+                   | ['expr' [['atom' '='     ] comp comp         ]]       emit("Eq")
+                   | ['expr' [['atom' '+'     ] comp comp         ]]       emit("Add")
+                   | ['expr' [['atom' '-'     ] comp comp         ]]       emit("Sub")
+                   | ['expr' [['atom' '*'     ] comp comp         ]]       emit("Mul")
+                   | ['expr' [['atom' 'lambda'] lambda            ]]
+                   | ['expr' [~builtIn                                     emit("PrepCall")
+                              comp box (&anything comp box)*:args ]]       emit("Call(" + args.length + ")")
                    | { throw "compilation failed" },
-  blankInstr       = emit(null)                                      -> (this.level().out.length - 1),
-  emit        :ins =                                                 -> this.level().out.push(ins),
-  emitAt :idx :ins =                                                 -> (this.level().out[idx] = ins),
-  box              =                                                    emit("Box"),
+  tcComp           = ['expr' [['atom' 'if']     comp
+                              blankInstr:jzIdx  tcComp                     emitAt(jzIdx,  "JZ("  + (this.ic() - jzIdx)      + ")")
+                              blankInstr:jmpIdx tcComp   ]]                emitAt(jmpIdx, "Jmp(" + (this.ic() - jmpIdx - 1) + ")")
+                   | ['expr' [~builtIn
+                              comp box (&anything comp box)*:args ]]       emit("TCall(" + args.length + ")")
+                   | comp,
+  blankInstr       = emit(null)                                         -> (this.level().out.length - 1),
+  emit        :ins =                                                    -> this.level().out.push(ins),
+  emitAt :idx :ins =                                                    -> (this.level().out[idx] = ins),
+  box              =                                                       emit("Box"),
   lambda           = { this.levels.push({fvs: [],
                                          syms: {_numVars: 0},
                                          out: []})
                        this.addArg("thisFunction")
                        this.level()                          }:level
-                     ['expr' [(['atom' :a] -> this.addArg(a))*]] comp   emit("Ret")
+                     ['expr' [(['atom' :a] -> this.addArg(a))*]] tcComp    emit("Ret")
                      { this.levels.pop()
-                       this.lambdas.push(level.out) }                   emit("mk2(Int(oPush), l" + this.lambdas.length + ")")
-                     { for (var i = 0; i < level.fvs.length; i++)       this._applyWithArgs("emit", this.lookup(level.fvs[i])) }
-                                                                        emit("MkFun(" + level.fvs.length + ")")
+                       this.lambdas.push(level.out) }                      emit("mk2(Int(oPush), l" + this.lambdas.length + ")")
+                     { for (var i = 0; i < level.fvs.length; i++)          this._applyWithArgs("emit", this.lookup(level.fvs[i])) }
+                                                                           emit("MkFun(" + level.fvs.length + ")")
 }
 BMLCompiler.initialize  = function()      { this.levels = [{fvs: [], syms: {_numVars: 0}, out: []}]
                                             this.lambdas = [] }
@@ -77,11 +85,12 @@ BMLCompiler.makeOutput  = function()      { var ws = new StringBuffer()
 //tree = BMLParser.matchAll("(((lambda (x) (lambda () x)) 5))", "parse")
 //tree = BMLParser.matchAll("(((lambda (x) (lambda (y) (- x y))) 5) 6)", "parse")
 //tree = BMLParser.matchAll("((((lambda (x) (lambda (y) (lambda () (+ x y)))) 5) 6))", "parse")
-//tree = BMLParser.matchAll("(((lambda (x y) (lambda () (+ x (+ y x))))) 5 6))", "parse")
+//tree = BMLParser.matchAll("(((lambda (x y) (lambda () (+ x (+ y x)))) 5 6))", "parse")
 //tree = BMLParser.matchAll("((((lambda (x) (lambda (y) (lambda () (+ x y)))) 5) 6))", "parse")
 //tree = BMLParser.matchAll("(((lambda (x y) (lambda () (+ x y))) 5 6))", "parse")
 //tree = BMLParser.matchAll("(((lambda (x y) (lambda () (+ x (+ y x)))) 5 6))", "parse")
-tree = BMLParser.matchAll("(((((lambda (x) (lambda (y) (lambda (z) (lambda () (+ x (+ y z)))))) 1) 2) 3))", "parse")
+//tree = BMLParser.matchAll("(((((lambda (x) (lambda (y) (lambda (z) (lambda () (+ x (+ y z)))))) 1) 2) 3))", "parse")
+tree = BMLParser.matchAll("((lambda (n acc) (if (= n 0) acc (thisFunction (- n 1) (* acc n)))) 5 1)", "parse")
 
 code = BMLCompiler.match(tree, "compile")
 
