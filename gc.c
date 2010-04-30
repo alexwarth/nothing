@@ -7,16 +7,16 @@
 // TODO: make iLd and iSt into helper functions, not instructions (shouldn't push/pop to/from stack)
  
 // Stack Layout:       ... local vars, etc.
-//               fp -> oldFp
-//                     oldIpb
-//                     oldIp
-//                     nArgs
-//                     arg(n)
-//                     arg(n - 1)
-//                     arg(n - 2)
-//                     ...
-//                     arg(1)
-//                     function, which is arg(0)
+//                     arg(n)                                     load/store(-nArgs)
+//                     arg(n - 1)                                 load/store(-(nArgs - 1))
+//                     arg(n - 2)                                 load/store(-(nArgs - 2))
+//                     ...                                        ...
+//                     arg(1)                                     load/store(-1)
+//                     function, which is arg(0)                  load/store(0)
+//               fp -> nArgs                                      load/store(1)
+//                     oldFp                                      load/store(2)
+//                     oldIpb                                     load/store(3)
+//                     oldIp                                      load/store(4)
 
 #define DEBUG 1
 
@@ -188,6 +188,9 @@ void printState(void) {
   printf("\\---------------------------------------------------------------------/\n");
 }
 
+value_t store(value_t offset, value_t v) { return slotAtPut(stack, Int(IntValue(fp)- IntValue(offset)), v); }
+value_t load (value_t offset)            { return slotAt(stack, Int(IntValue(fp) - IntValue(offset))); }
+
 #define Instruction(Name, Arg) value_t Name(int quiet, value_t Arg) { \
                                  if (DEBUG && !quiet) { printf(">>> " #Name " "); println(Arg); }
 
@@ -218,11 +221,9 @@ Instruction(iUnbox, _)         return iPush(1, slotAt(iPop(1, nil), Int(0))); }
 Instruction(iLd, offset)       return iPush(1, slotAt(stack, Int(IntValue(fp) - IntValue(offset)))); }
 Instruction(iSt, offset)       return slotAtPut(stack, Int(IntValue(fp) - IntValue(offset)), iPop(1, nil)); }
 
-Instruction(iArg, n)           return iLd(1, Int(-IntValue(n))); }
+Instruction(iArg, n)           return iPush(1, load(Int(-IntValue(n)))); }
 
-Instruction(iFv, n)            iLd(1, Int(0)); // push the boxed closure
-                               iUnbox(1, nil); // unbox it
-                               value_t closure = iPop(1, nil);
+Instruction(iFv, n)            value_t closure = slotAt(load(Int(0)), Int(0));
                                return iPush(1, slotAt(closure, Int(IntValue(n) + 1))); }
 
 Instruction(iStVar, _)         value_t val = iPop(1, nil);
@@ -239,21 +240,16 @@ Instruction(iPrepCall, _)      iPush(1, nil); // make room for ip
                                iPush(1, nil); // make room for nArgs
                                return nil; }
 
-Instruction(iCall, nArgs)      iPush(1, slotAt(stack, Int(IntValue(sp) - 1 - IntValue(nArgs)))); // boxed closure
-                               iUnbox(1, nil);                                                   // unbox closure
-                               iUnbox(1, nil);                                                   // get the code out of the closure
-                               ipb = iPop(1, nil);
+Instruction(iCall, nArgs)      ipb = slotAt(slotAt(slotAt(stack, Int(IntValue(sp) - 1 - IntValue(nArgs))), Int(0)), Int(0)); // code
                                fp  = Int(IntValue(sp) - IntValue(nArgs) - 1);
-                               iPush(1, nArgs);
-                               iSt(1, Int(1));
-                               iPush(1, ip);
-                               iSt(1, Int(4));
+                               store(Int(1), nArgs);
+                               store(Int(4), ip);
                                ip  = Int(-1);
                                return nil; }
 
 Instruction(iTCall, newNArgs)  for (int i = IntValue(newNArgs); i >= 0; i--)
-                                 iSt(1, Int(-i));
-                               ipb = slotAt(slotAt(slotAt(stack, fp), Int(0)), Int(0));
+                                 store(Int(-i), iPop(1, nil));
+                               ipb = slotAt(slotAt(load(Int(0)), Int(0)), Int(0));
                                ip  = Int(-1);
                                sp  = Int(IntValue(fp) + IntValue(newNArgs) + 1);
                                return nil; }
