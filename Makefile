@@ -1,7 +1,7 @@
 CFLAGS = -std=c99 -Wall -ggdb
 
-check : gc
-	./gc
+check : main
+	./main
 
 clean :
-	rm -f gc
+	rm -f main
