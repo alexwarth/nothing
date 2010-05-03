@@ -4,7 +4,7 @@
 #include <string.h>
 #include <assert.h>
 
-// TODO: make iLd and iSt into helper functions, not instructions (shouldn't push/pop to/from stack)
+// TODO: make this stuff OO (even ref-cells used for fvs and args), add receiver, make "global obj", add recv to stack frame, etc.
  
 // Stack Layout:       ... local vars, etc.
 //                     arg(n)                                     load/store(-nArgs)
