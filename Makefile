@@ -1,6 +1,8 @@
 CFLAGS = -std=c99 -Wall -ggdb
 
-check : main
+build : main
+
+go : main
 	./main
 
 clean :
