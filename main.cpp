@@ -235,24 +235,23 @@ void printState(void) {
 }
 
 const size_t MaxNumPrims = 32;
-value_t (*prims[MaxNumPrims])(int, value_t);
+value_t (*prims[MaxNumPrims])(value_t);
+char *primNames[MaxNumPrims];
 size_t numPrims = 0;
 
-value_t addPrim(value_t (*f)(int, value_t)) { assert(numPrims < MaxNumPrims);
-                                              prims[numPrims] = f;
-                                              return Int(numPrims++); }
+value_t addPrim(char *n, value_t (*f)(value_t)) { assert(numPrims < MaxNumPrims);
+                                                  primNames[numPrims] = n;
+					          prims    [numPrims] = f;
+                                                  return Int(numPrims++); }
 
-value_t store(value_t offset, value_t v)    { return slotAtPut(stack, Int(IntValue(fp)- IntValue(offset)), v); }
-value_t load (value_t offset)               { return slotAt(stack, Int(IntValue(fp) - IntValue(offset)));      }
+value_t store(value_t offset, value_t v)        { return slotAtPut(stack, Int(IntValue(fp) - IntValue(offset)), v); }
+value_t load (value_t offset)                   { return slotAt   (stack, Int(IntValue(fp) - IntValue(offset)));    }
 
 
-#define Prim(Name, Arg, Body) value_t p##Name(int quiet, value_t Arg) {                          \
-                                if (DEBUG && !quiet) { printf(">>> " #Name " "); println(Arg); } \
-                                Body                                                             \
-                              }                                                                  \
-                              value_t Name = addPrim(p##Name);
+#define Prim(Name, Arg, Body) value_t p##Name(value_t Arg) { Body } \
+                              value_t Name = addPrim(#Name, p##Name);
 
-#define _p(Name, Arg)         prims[IntValue(Name)](1, Arg)
+#define _p(Name, Arg)         prims[IntValue(Name)](Arg)
 
 Prim(Push, v,          { slotAtPut(stack, sp, v);
                          sp = Int(IntValue(sp) + 1);
@@ -264,11 +263,11 @@ Prim(Pop, _,           { assert(sp > Int(0));
                          slotAtPut(stack, sp, nil);
                          return r; })
 
-Prim(Eq, _,            { return _p(Push, Int(IntValue(pPop(1, nil)) == IntValue(pPop(1, nil)))); })
+Prim(Eq, _,            { return _p(Push, Int(IntValue(_p(Pop, nil)) == IntValue(_p(Pop, nil)))); })
 
-Prim(Add, _,           { value_t op2 = _p(Pop, nil); return _p(Push, Int(IntValue(pPop(1, nil)) + IntValue(op2))); })
-Prim(Sub, _,           { value_t op2 = _p(Pop, nil); return _p(Push, Int(IntValue(pPop(1, nil)) - IntValue(op2))); })
-Prim(Mul, _,           { value_t op2 = _p(Pop, nil); return _p(Push, Int(IntValue(pPop(1, nil)) * IntValue(op2))); })
+Prim(Add, _,           { value_t op2 = _p(Pop, nil); return _p(Push, Int(IntValue(_p(Pop, nil)) + IntValue(op2))); })
+Prim(Sub, _,           { value_t op2 = _p(Pop, nil); return _p(Push, Int(IntValue(_p(Pop, nil)) - IntValue(op2))); })
+Prim(Mul, _,           { value_t op2 = _p(Pop, nil); return _p(Push, Int(IntValue(_p(Pop, nil)) * IntValue(op2))); })
 
 Prim(Box, _,           { return _p(Push, ref  (_p(Pop, nil))); })
 Prim(Unbox, _,         { return _p(Push, deref(_p(Pop, nil))); })
@@ -335,14 +334,14 @@ Prim(Send, nArgs,      { fp = Int(IntValue(sp) - IntValue(nArgs) - 1);
 
 Prim(Ret, _,           { value_t r = _p(Pop, nil);
                          sp  = Int(IntValue(fp) - 1);
-                         fp  = pPop(1, nil);
-                         ipb = pPop(1, nil);
-                         ip  = pPop(1, nil);
+                         fp  = _p(Pop, nil);
+                         ipb = _p(Pop, nil);
+                         ip  = _p(Pop, nil);
                          return _p(Push, r); })
 
 Prim(Jmp, n,           { ip = Int(IntValue(ip) + IntValue(n)); return nil;      })
-Prim(Jz,  n,           { return IntValue(pPop(1, nil)) == 0 ? _p(Jmp, n) : nil; })
-Prim(Jnz, n,           { return IntValue(pPop(1, nil)) != 0 ? _p(Jmp, n) : nil; })
+Prim(JZ,  n,           { return IntValue(_p(Pop, nil)) == 0 ? _p(Jmp, n) : nil; })
+Prim(JNZ, n,           { return IntValue(_p(Pop, nil)) != 0 ? _p(Jmp, n) : nil; })
 
 Prim(Halt, _,          { })
 
@@ -352,9 +351,9 @@ void interp(value_t prog) {
   ip  = Int(0);
   while (1) {
     value_t instr = slotAt(ipb, ip), primIdx = IntValue(car(instr)), op = cdr(instr);
-    if (DEBUG) { puts("\n\n"); printState(); putchar('\n'); }
-    if (0 <= primIdx && primIdx < sizeof(prims) / sizeof(value_t (*)(int, value_t))) prims[primIdx](0, op);
-    else                                                                             error("invalid primitive %d\n", primIdx);
+    if (DEBUG) { puts("\n\n"); printState(); printf("\n%s ", primNames[primIdx]); println(op); }
+    if (0 <= primIdx && primIdx < sizeof(prims) / sizeof(value_t (*)(value_t))) prims[primIdx](op);
+    else                                                                        error("invalid primitive %d\n", primIdx);
     ip = Int(IntValue(ip) + 1);
     if (DEBUG) { putchar('\n'); printState(); printf("\n\n\n"); }
     if (primIdx == IntValue(Halt))
@@ -415,9 +414,9 @@ value_t intern(value_t s) {
       return is;
     curr = cdr(curr);
   }
-  pPush(1, s); // this Push and the Pop below are needed in case s is not already on the stack
+  _p(Push, s);   // this Push and the Pop below are needed in case s is not already on the stack
   deref_(internedStringsRef, cons(s, internedStrings));
-  pPop(1, nil);
+  _p(Pop,  nil);
   return s; 
 }
 

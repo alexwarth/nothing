@@ -56,7 +56,7 @@ BMLCompiler.lookup      = function(n)     { var li = this.levels.length - 1
                                                   return "cons(Arg, Int(" + vi + "))"
                                                 while (++li < this.levels.length)
                                                   vi = this.addFv(li, n)
-                                                return "cons(FV, Int(" + vi + "))"
+                                                return "cons(Fv, Int(" + vi + "))"
                                               }
                                               li--
                                             }
@@ -74,7 +74,7 @@ BMLCompiler.iMakeOutput = function(name, instrs, ws) {
 BMLCompiler.makeOutput  = function()      { var ws = new StringBuffer()
                                             for (var i = 0; i < this.lambdas.length; i++)
                                               this.iMakeOutput("l" + (i + 1), this.lambdas[i], ws)
-                                            this.level().out.push("Halt")
+                                            this.level().out.push("cons(Halt, nil)")
                                             this.iMakeOutput("prog", this.level().out, ws)
                                             return ws.contents() }
 
