@@ -87,7 +87,6 @@ void growOT(void) {
 }
 
 value_t mk(size_t numSlots);
-value_t intern(value_t s);
 void printString(value_t s);
 
 #define deref(r)     slotAt(r, Int(0))
@@ -125,24 +124,6 @@ classSlots *asClass(value_t oop)                         { assert(isOop(oop));
 value_t addGlobal(value_t v)                             { car_(globals, v);
                                                            globals = cons(nil, globals);
                                                            return v; }
-
-value_t mkClass(value_t name, value_t slotNames, value_t super) {
-  value_t _class  = addGlobal(mk(sizeof(classSlots) / sizeof(value_t)));
-  classSlots *cls = asClass(_class);
-  cls->name       = intern(name);
-  cls->slotNames  = slotNames;
-  cls->numSlots   = super == nil ? Int(0)  : asClass(super)->numSlots;
-  cls->vTableSize = Int(16);
-  cls->sels       = mk(IntValue(cls->vTableSize));
-  cls->impls      = mk(IntValue(cls->vTableSize));
-  cls->super      = super;
-  while (slotNames != nil) {
-    // TODO: install getter and setter for this slot
-    cls->numSlots = Int(IntValue(cls->numSlots) + 1);
-    slotNames = cdr(slotNames);
-  }
-  return _class;
-}
 
 int mark(value_t oop) {
   if (!isOop(oop))
@@ -219,12 +200,12 @@ void printState(void) {
 
 const size_t MaxNumPrims = 32;
 value_t (*prims[MaxNumPrims])(value_t);
-char *primNames[MaxNumPrims];
+void *primNames[MaxNumPrims];
 size_t numPrims = 0;
 
 value_t addPrim(char *n, value_t (*f)(value_t)) { assert(numPrims < MaxNumPrims);
+                                                        prims[numPrims] = f;
                                                   primNames[numPrims] = n;
-					          prims    [numPrims] = f;
                                                   return Int(numPrims++); }
 
 value_t store(value_t offset, value_t v)        { return slotAtPut(stack, Int(IntValue(fp) - IntValue(offset)), v); }
@@ -310,6 +291,24 @@ Prim(InstMeth, _class, { value_t sel  = _p(Pop, nil);
                                 slotAtPut(cls->sels,  Int(oldVTSize), sel);
                          return slotAtPut(cls->impls, Int(oldVTSize), impl); })
 
+Prim(MkClass, name,    { value_t super     = _p(Pop, nil);
+                         value_t slotNames = _p(Pop, nil);
+                         value_t _class    = addGlobal(mk(sizeof(classSlots) / sizeof(value_t)));
+                         classSlots *cls   = asClass(_class);
+                         cls->name         = name;
+                         cls->slotNames    = slotNames;
+                         cls->numSlots     = super == nil ? Int(0)  : asClass(super)->numSlots;
+                         cls->vTableSize   = Int(16);
+                         cls->sels         = mk(IntValue(cls->vTableSize));
+                         cls->impls        = mk(IntValue(cls->vTableSize));
+                         cls->super        = super;
+                         while (slotNames != nil) {
+                           // TODO: install getter and setter for this slot
+                           cls->numSlots = Int(IntValue(cls->numSlots) + 1);
+                           slotNames = cdr(slotNames);
+                         }
+                         return _class; })                       
+
 Prim(Lookup, _,        { value_t recv = deref(load(Int(-1)));                            // unbox arg(1)
                          value_t sel  = deref(load(Int(0)));                             // unbox the selector
                          value_t cls  = classOf(recv);
@@ -354,7 +353,7 @@ void interp(value_t prog) {
   ip  = Int(0);
   while (1) {
     value_t instr = slotAt(ipb, ip), primIdx = IntValue(car(instr)), op = cdr(instr);
-    if (DEBUG) { puts("\n\n"); printState(); printf("\n%s ", primNames[primIdx]); println(op); }
+    if (DEBUG) { puts("\n\n"); printState(); putchar('\n'); printString((value_t)primNames[primIdx]); putchar(' '); println(op); }
     if (0 <= primIdx && primIdx < sizeof(prims) / sizeof(value_t (*)(value_t))) prims[primIdx](op);
     else                                                                        error("invalid primitive %d\n", primIdx);
     ip = Int(IntValue(ip) + 1);
@@ -397,31 +396,32 @@ value_t stringify(char *s) {
   return r;
 }
 
-value_t strCmp(value_t s1, value_t s2) {
-  int idx = 0;
-  while (1) {
-    int c1 = IntValue(slotAt(s1, Int(idx))), c2 = IntValue(slotAt(s2, Int(idx))), diff = c1 - c2;
-    if (diff != 0)
-      return Int(diff);
-    else if (c1 == 0)
-      return Int(0);
-    idx++;
-  }
-}
+Prim(StrCmp, _, { value_t s1 = _p(Pop, nil);
+                  value_t s2 = _p(Pop, nil);
+                  int idx = 0;
+                  while (1) {
+                    int c1   = IntValue(slotAt(s1, Int(idx)));
+                    int c2   = IntValue(slotAt(s2, Int(idx)));
+                    int diff = c1 - c2;
+                    if      (diff != 0) return Int(diff);
+                    else if (c1 == 0)   return Int(0);
+                    idx++;
+                  } })
 
-value_t intern(value_t s) {
-  value_t internedStrings = deref(internedStringsRef), curr = internedStrings;
-  while (curr != nil) {
-    value_t is = car(curr);
-    if (strCmp(s, is) == Int(0))
-      return is;
-    curr = cdr(curr);
-  }
-  _p(Push, s);   // this Push and the Pop below are needed in case s is not already on the stack
-  deref_(internedStringsRef, cons(s, internedStrings));
-  _p(Pop,  nil);
-  return s; 
-}
+Prim(Intern, s, { value_t internedStrings = deref(internedStringsRef);
+                  value_t curr = internedStrings;
+                  while (curr != nil) {
+                    value_t is = car(curr);
+                    _p(Push, is);
+                    _p(Push, s);
+                    if (_p(StrCmp, nil) == Int(0))
+                      return is;
+                    curr = cdr(curr);
+                  }
+                  _p(Push, s);   // this Push and the Pop below are needed in case s is not already on the stack
+                  deref_(internedStringsRef, cons(s, internedStrings));
+                  _p(Pop,  nil);
+                  return s; })
 
 void printString(value_t s) {
   int idx = 0;
@@ -453,15 +453,20 @@ void init(void) {
   stack = addGlobal(mk(10240));
   internedStringsRef = addGlobal(ref(nil));
 
-  value_t name = intern(stringify("Object"));
-  cObject = mkClass(name, nil, nil);
+  // "objectify" primNames
+  for (int p = 0; p < numPrims; p++)
+    primNames[p] = (void *)_p(Intern, stringify((char *)primNames[p]));
+
+  _p(Push, nil); // slotNames
+  _p(Push, nil); // super
+  cObject = _p(MkClass, _p(Intern,stringify("Object")));
   for (int idx = 0; idx < OTSize; idx++) {
     if (IntValue(OT[idx].numSlots) < 0)
       continue;
     OT[idx]._class = cObject;
   }
 
-  value_t selector    = intern(stringify("aMethod"));
+  value_t selector    = _p(Intern, stringify("aMethod"));
   value_t closure     = addGlobal(ref(nil));
   value_t closureCode = deref_(closure, cons(nil, nil));
   car_(closureCode, cons(Push, Int(1234)));
@@ -474,8 +479,7 @@ void init(void) {
 int main(void) {
   init();
 
-  value_t sel = intern(stringify("aMethod"));
-
+  value_t sel  = _p(Intern, stringify("aMethod"));
   value_t prog = addGlobal(mk(11));
   slotAtPut(prog, Int(0),  cons(PrepCall, nil));
   slotAtPut(prog, Int(1),  cons(Push,     sel));
