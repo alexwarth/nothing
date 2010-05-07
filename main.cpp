@@ -4,6 +4,7 @@
 #include <string.h>
 #include <assert.h>
 
+// prims, globals, vtables should all be cheapdict...
 // TODO: make everything OO (even the OT, ref-cells used for FVs and args), make "global obj", add recv to stack frame, etc.
 // TODO: make strings instances of String, made up of instances of Char
 // TODO: make a "CheapDictionary" class, use that for vtable
@@ -124,24 +125,6 @@ classSlots *asClass(value_t oop)                         { assert(isOop(oop));
 value_t addGlobal(value_t v)                             { car_(globals, v);
                                                            globals = cons(nil, globals);
                                                            return v; }
-
-value_t installMethod(value_t _class, value_t sel, value_t impl) {
-  classSlots *cls = asClass(_class);
-  int freeIdx = -1;
-  for (int idx = 0; idx < IntValue(cls->numSlots); idx++) {
-    value_t s = slotAt(cls->sels, Int(idx));
-    if      (s == sel) return slotAtPut(cls->impls, Int(idx), impl);
-    else if (s == nil) freeIdx = idx;
-  }
-  if (freeIdx >= 0) {        slotAtPut(cls->sels,  Int(freeIdx), sel);
-                      return slotAtPut(cls->impls, Int(freeIdx), impl); }
-  int oldVTableSize = IntValue(cls->vTableSize), newVTableSize = oldVTableSize * 2;
-  cls->vTableSize = Int(newVTableSize);
-  value_t arr = mk(newVTableSize); memcpy(slots(arr), slots(cls->sels),  newVTableSize * sizeof(value_t)); cls->sels  = arr;
-          arr = mk(newVTableSize); memcpy(slots(arr), slots(cls->impls), newVTableSize * sizeof(value_t)); cls->impls = arr;
-         slotAtPut(cls->sels,  Int(oldVTableSize), sel);
-  return slotAtPut(cls->impls, Int(oldVTableSize), impl);
-}
 
 value_t mkClass(value_t name, value_t slotNames, value_t super) {
   value_t _class  = addGlobal(mk(sizeof(classSlots) / sizeof(value_t)));
@@ -307,6 +290,26 @@ Prim(TCall, newNArgs,  { for (int i = IntValue(newNArgs); i >= 0; i--)
                          sp  = Int(IntValue(fp) + IntValue(newNArgs) + 1);
                          return nil; })
 
+Prim(InstMeth, _class, { value_t sel  = _p(Pop, nil);
+                         value_t impl = _p(Pop, nil);
+                         classSlots *cls = asClass(_class);
+                         int freeIdx = -1;
+                         for (int idx = 0; idx < IntValue(cls->numSlots); idx++) {
+                           value_t s = slotAt(cls->sels, Int(idx));
+                           if (s == sel)      return slotAtPut(cls->impls, Int(idx), impl);
+                           else if (s == nil) freeIdx = idx;
+                         }
+                         if (freeIdx >= 0) {        slotAtPut(cls->sels,  Int(freeIdx), sel);
+                                             return slotAtPut(cls->impls, Int(freeIdx), impl); }
+                         int oldVTSize = IntValue(cls->vTableSize);
+                         int newVTSize = oldVTSize * 2;
+                         cls->vTableSize = Int(newVTSize);
+                         value_t arr;
+                         arr = mk(newVTSize); memcpy(slots(arr), slots(cls->sels),  newVTSize * sizeof(value_t)); cls->sels  = arr;
+                         arr = mk(newVTSize); memcpy(slots(arr), slots(cls->impls), newVTSize * sizeof(value_t)); cls->impls = arr;
+                                slotAtPut(cls->sels,  Int(oldVTSize), sel);
+                         return slotAtPut(cls->impls, Int(oldVTSize), impl); })
+
 Prim(Lookup, _,        { value_t recv = deref(load(Int(-1)));                            // unbox arg(1)
                          value_t sel  = deref(load(Int(0)));                             // unbox the selector
                          value_t cls  = classOf(recv);
@@ -458,12 +461,14 @@ void init(void) {
     OT[idx]._class = cObject;
   }
 
-  value_t testMethod     = addGlobal(ref(nil)),
-          testMethodCode = deref_(testMethod, cons(nil, nil));
-  car_(testMethodCode, cons(Push, Int(1234)));
-  cdr_(testMethodCode, cons(Ret, nil));
-  value_t sel = intern(stringify("aMethod"));
-  installMethod(cObject, sel, testMethod);
+  value_t selector    = intern(stringify("aMethod"));
+  value_t closure     = addGlobal(ref(nil));
+  value_t closureCode = deref_(closure, cons(nil, nil));
+  car_(closureCode, cons(Push, Int(1234)));
+  cdr_(closureCode, cons(Ret, nil));
+  _p(Push, closure);
+  _p(Push, selector);
+  _p(InstMeth, cObject);
 }
 
 int main(void) {
