@@ -4,7 +4,8 @@
 #include <string.h>
 #include <assert.h>
 
-// prims, globals, vtables should all be cheapdict...
+// TODO: write Object's println method (figure out how to send a message from a prim -- not necessary here, but definitely useful)
+// TODO: prims, globals, vtables should all be cheapdict...
 // TODO: make everything OO (even the OT, ref-cells used for FVs and args), make "global obj", add recv to stack frame, etc.
 // TODO: make strings instances of String, made up of instances of Char
 // TODO: make a "CheapDictionary" class, use that for vtable
@@ -23,12 +24,14 @@
 //                     oldIpb                        load/store(3)
 //                     oldIp                         load/store(4)
 
-const int DEBUG = 1;
+const int DEBUG = 0;
 
 typedef unsigned char byte_t;
 typedef int           value_t;
 
-value_t nil, stack, sp, globals, ipb, ip, fp, internedStringsRef, cObject;
+value_t nil, stack, sp, globals, ipb, ip, fp, internedStringsRef,
+        cObject, cInt, cString, cVar, cClosure,
+        sPrint, sPrintln;
 
 #define allocate(N, T) ((T *) calloc(N, sizeof(T)))
 
@@ -87,7 +90,6 @@ void growOT(void) {
 }
 
 value_t mk(size_t numSlots);
-void printString(value_t s);
 
 #define deref(r)     slotAt(r, Int(0))
 #define deref_(r, v) slotAtPut(r, Int(0), v)
@@ -114,7 +116,8 @@ value_t slotAtPut(value_t oop, value_t idx, value_t val) { assert(isOop(oop));
                                                            assert(Int(0) <= idx && idx < numSlots(oop));
                                                            return OT[OopValue(oop)].ptr.slots[IntValue(idx)] = val; }
 
-value_t classOf(value_t x)                               { return isOop(x) ? OT[OopValue(x)]._class : cObject; }
+value_t classOf(value_t x)                               { return isInt(x) ? cInt : OT[OopValue(x)]._class;      }
+value_t classOf_(value_t x, value_t c)                   { assert(!isInt(x)); return OT[OopValue(x)]._class = c; }
 
 classSlots *asClass(value_t oop)                         { assert(isOop(oop));
                                                            // TODO: replace the following assert with an instanceof check
@@ -189,15 +192,6 @@ void _print(value_t v, value_t n, value_t selIdx) {
 void print(value_t v)   { _print(v, Int(1), Int(-1)); }
 void println(value_t v) { print(v); putchar('\n');    }
 
-void printState(void) {
-  printf("ipb(ip="); print(ip); printf("): "); _print(ipb, Int(1), ip); putchar('\n');
-  printf("fp: "); println(fp);
-  printf("/---------------------------------------------------------------------\\\n");
-  int spv = IntValue(sp);
-  while (spv-- > 0) { fputs("  ", stdout); println(slotAt(stack, Int(spv))); }
-  printf("\\---------------------------------------------------------------------/\n");
-}
-
 const size_t MaxNumPrims = 32;
 value_t (*prims[MaxNumPrims])(value_t);
 void *primNames[MaxNumPrims];
@@ -212,49 +206,53 @@ value_t store(value_t offset, value_t v)        { return slotAtPut(stack, Int(In
 value_t load (value_t offset)                   { return slotAt   (stack, Int(IntValue(fp) - IntValue(offset)));    }
 
 
-#define Prim(Name, Arg, Body) value_t p##Name(value_t Arg) { Body } \
-                              value_t Name = addPrim(#Name, p##Name);
+#define Prim(Name, Arg, Body)       value_t p##Name(value_t Arg) { Body } \
+                                    value_t Name = addPrim(#Name, p##Name);
 
-#define _p(Name, Arg)         prims[IntValue(Name)](Arg)
+#define _p(Name)                                                         prims[IntValue(Name)](nil)
+#define _p1(Name, Arg)                                                   prims[IntValue(Name)](Arg)
+#define _p2(Name, Arg1, Arg2)       ({                  _p1(Push, Arg2); prims[IntValue(Name)](Arg1); })
+#define _p3(Name, Arg1, Arg2, Arg3) ({ _p1(Push, Arg3); _p1(Push, Arg2); prims[IntValue(Name)](Arg1); })
 
-Prim(Push, v,          { slotAtPut(stack, sp, v);
+Prim(Push, v,          { value_t _v = v;
+                         slotAtPut(stack, sp, _v);
                          sp = Int(IntValue(sp) + 1);
-                         return v; })
+                         return _v; })
 
 Prim(Pop, _,           { assert(sp > Int(0));
                          sp = Int(IntValue(sp) - 1);
                          value_t r = slotAt(stack, sp);
-                         slotAtPut(stack, sp, nil);
+                         slotAtPut(stack, sp, nil);     // clear this slot to prevent memory leak
                          return r; })
 
-Prim(Eq, _,            { return _p(Push, Int(IntValue(_p(Pop, nil)) == IntValue(_p(Pop, nil)))); })
+Prim(Eq, _,            { return _p1(Push, Int(IntValue(_p(Pop)) == IntValue(_p(Pop)))); })
 
-Prim(Add, _,           { value_t op2 = _p(Pop, nil); return _p(Push, Int(IntValue(_p(Pop, nil)) + IntValue(op2))); })
-Prim(Sub, _,           { value_t op2 = _p(Pop, nil); return _p(Push, Int(IntValue(_p(Pop, nil)) - IntValue(op2))); })
-Prim(Mul, _,           { value_t op2 = _p(Pop, nil); return _p(Push, Int(IntValue(_p(Pop, nil)) * IntValue(op2))); })
+Prim(Add, _,           { value_t op2 = _p(Pop); return _p1(Push, Int(IntValue(_p(Pop)) + IntValue(op2))); })
+Prim(Sub, _,           { value_t op2 = _p(Pop); return _p1(Push, Int(IntValue(_p(Pop)) - IntValue(op2))); })
+Prim(Mul, _,           { value_t op2 = _p(Pop); return _p1(Push, Int(IntValue(_p(Pop)) * IntValue(op2))); })
 
-Prim(Box, _,           { return _p(Push, ref  (_p(Pop, nil))); })
-Prim(Unbox, _,         { return _p(Push, deref(_p(Pop, nil))); })
+Prim(Box, _,           { return _p1(Push, ref  (_p(Pop))); })
+Prim(Unbox, _,         { return _p1(Push, deref(_p(Pop))); })
 
-Prim(Ld, offset,       { return _p(Push, slotAt   (stack, Int(IntValue(fp) - IntValue(offset))));              })
-Prim(St, offset,       { return          slotAtPut(stack, Int(IntValue(fp) - IntValue(offset)), _p(Pop, nil)); })
+Prim(Ld, offset,       { return _p1(Push, slotAt   (stack, Int(IntValue(fp) - IntValue(offset))));         })
+Prim(St, offset,       { return           slotAtPut(stack, Int(IntValue(fp) - IntValue(offset)), _p(Pop)); })
 
-Prim(Arg, n,           { return _p(Push, load(Int(-IntValue(n)))); })
+Prim(Arg, n,           { return _p1(Push, load(Int(-IntValue(n)))); })
 Prim(Fv, n,            { value_t closure = slotAt(load(Int(0)), Int(0));
-                         return _p(Push, slotAt(closure, Int(IntValue(n) + 1))); })
+                         return _p1(Push, slotAt(closure, Int(IntValue(n) + 1))); })
 
-Prim(StVar, _,         { value_t val = _p(Pop, nil);
-                         return deref_(_p(Pop, nil), val); })
+Prim(StVar, _,         { value_t val = _p(Pop);
+                         return deref_(_p(Pop), val); })
 
 Prim(MkFun, nFreeVars, { value_t closure = mk(IntValue(nFreeVars) + 1);
                          for (int i = IntValue(nFreeVars); i >= 0; i--)
-                           slotAtPut(closure, Int(i), _p(Pop, nil));
-                         return _p(Push, closure); })
+                           slotAtPut(closure, Int(i), _p(Pop));
+                         return _p1(Push, closure); })
 
-Prim(PrepCall, _,      { _p(Push, nil); // make room for ip
-                         _p(Push, ipb);
-                         _p(Push, fp);
-                         _p(Push, nil); // make room for nArgs
+Prim(PrepCall, _,      { _p1(Push, nil); // make room for ip
+                         _p1(Push, ipb);
+                         _p1(Push, fp);
+                         _p1(Push, nil); // make room for nArgs
                          return nil; })
 
 Prim(Call, nArgs,      { ipb = deref(slotAt(slotAt(stack, Int(IntValue(sp) - 1 - IntValue(nArgs))), Int(0))); // unbox fn, get code
@@ -265,14 +263,14 @@ Prim(Call, nArgs,      { ipb = deref(slotAt(slotAt(stack, Int(IntValue(sp) - 1 -
                          return nil; })
 
 Prim(TCall, newNArgs,  { for (int i = IntValue(newNArgs); i >= 0; i--)
-                           store(Int(-i), _p(Pop, nil));
+                           store(Int(-i), _p(Pop));
                          ipb = slotAt(deref(load(Int(0))), Int(0));
                          ip  = Int(-1);
                          sp  = Int(IntValue(fp) + IntValue(newNArgs) + 1);
                          return nil; })
 
-Prim(InstMeth, _class, { value_t sel  = _p(Pop, nil);
-                         value_t impl = _p(Pop, nil);
+Prim(InstMeth, _class, { value_t sel  = _p(Pop);
+                         value_t impl = _p(Pop);
                          classSlots *cls = asClass(_class);
                          int freeIdx = -1;
                          for (int idx = 0; idx < IntValue(cls->numSlots); idx++) {
@@ -291,8 +289,8 @@ Prim(InstMeth, _class, { value_t sel  = _p(Pop, nil);
                                 slotAtPut(cls->sels,  Int(oldVTSize), sel);
                          return slotAtPut(cls->impls, Int(oldVTSize), impl); })
 
-Prim(MkClass, name,    { value_t super     = _p(Pop, nil);
-                         value_t slotNames = _p(Pop, nil);
+Prim(MkClass, name,    { value_t super     = _p(Pop);
+                         value_t slotNames = _p(Pop);
                          value_t _class    = addGlobal(mk(sizeof(classSlots) / sizeof(value_t)));
                          classSlots *cls   = asClass(_class);
                          cls->name         = name;
@@ -309,7 +307,17 @@ Prim(MkClass, name,    { value_t super     = _p(Pop, nil);
                          }
                          return _class; })                       
 
-Prim(Lookup, _,        { value_t recv = deref(load(Int(-1)));                            // unbox arg(1)
+Prim(StrPrint, s,     { int idx = 0;
+                        while (1) {
+                          int c = IntValue(slotAt(s, Int(idx++)));
+                          if (c == 0)
+                            break;
+                          putchar(c);
+                        }
+                        return s; })
+
+Prim(Lookup, _,        { // the method cache should be implemented in "userland" (where this primitive will be replaced)
+                         value_t recv = deref(load(Int(-1)));                            // unbox arg(1)
                          value_t sel  = deref(load(Int(0)));                             // unbox the selector
                          value_t cls  = classOf(recv);
                          while (cls != nil) {
@@ -322,30 +330,53 @@ Prim(Lookup, _,        { value_t recv = deref(load(Int(-1)));                   
                              }
                            cls = _class->super;
                          }
-                         print(asClass(classOf(recv))->name); printf(" does not understand "); printString(sel); putchar('\n');
+                         _p1(StrPrint, asClass(classOf(recv))->name); printf(" does not understand "); _p1(StrPrint, sel); putchar('\n');
                          error("^^ message not understood ^^");
                          return nil; })
 
 Prim(Send, nArgs,      { fp = Int(IntValue(sp) - IntValue(nArgs) - 1);
                          store(Int(1), nArgs);
                          store(Int(4), ip);
-                         value_t method = _p(Lookup, nil);
+                         value_t method = _p(Lookup);
                          ipb = slotAt(method, Int(0)); // get the code out of the closure
                          ip = Int(-1);
                          return nil; })
 
-Prim(Ret, _,           { value_t r = _p(Pop, nil);
+Prim(Ret, _,           { value_t r = _p(Pop);
                          sp  = Int(IntValue(fp) - 1);
-                         fp  = _p(Pop, nil);
-                         ipb = _p(Pop, nil);
-                         ip  = _p(Pop, nil);
-                         return _p(Push, r); })
+                         fp  = _p(Pop);
+                         ipb = _p(Pop);
+                         ip  = _p(Pop);
+                         return _p1(Push, r); })
+
+Prim(ObjPrint,   o,   { print(o); })
 
 Prim(Jmp, n,           { ip = Int(IntValue(ip) + IntValue(n)); return nil;      })
-Prim(JZ,  n,           { return IntValue(_p(Pop, nil)) == 0 ? _p(Jmp, n) : nil; })
-Prim(JNZ, n,           { return IntValue(_p(Pop, nil)) != 0 ? _p(Jmp, n) : nil; })
+Prim(JZ,  n,           { return IntValue(_p(Pop)) == 0 ? _p1(Jmp, n) : nil; })
+Prim(JNZ, n,           { return IntValue(_p(Pop)) != 0 ? _p1(Jmp, n) : nil; })
+
+Prim(DoPrim, n,        { value_t prim = _p(Pop);
+                         value_t arg1 = n > Int(0) ? _p(Pop) : nil;
+                         return _p1(Push, _p1(prim, arg1)); })
 
 Prim(Halt, _,          { })
+
+void printState(void) {
+  printf("ipb(ip="); print(ip); printf("): [");
+  for (int idx = 0; idx < IntValue(numSlots(ipb)); idx++) {
+    if (idx > 0) printf(", ");
+    value_t instr = slotAt(ipb, Int(idx)), prim = slotAt(instr, Int(0)), arg = slotAt(instr, Int(1));
+    if (idx == IntValue(ip)) printf("<<");
+    _p1(StrPrint, (value_t)primNames[IntValue(prim)]); putchar('('); print(arg); putchar(')');
+    if (idx == IntValue(ip)) printf(">>");
+  }
+  printf("]\n");
+  printf("fp: "); println(fp);
+  printf("/---------------------------------------------------------------------\\\n");
+  int spv = IntValue(sp);
+  while (spv-- > 0) { fputs("  ", stdout); println(slotAt(stack, Int(spv))); }
+  printf("\\---------------------------------------------------------------------/\n");
+}
 
 void interp(value_t prog) {
   fp  = sp;
@@ -353,7 +384,7 @@ void interp(value_t prog) {
   ip  = Int(0);
   while (1) {
     value_t instr = slotAt(ipb, ip), primIdx = IntValue(car(instr)), op = cdr(instr);
-    if (DEBUG) { puts("\n\n"); printState(); putchar('\n'); printString((value_t)primNames[primIdx]); putchar(' '); println(op); }
+    if (DEBUG) { puts("\n\n"); printState(); putchar('\n'); _p1(StrPrint, (value_t)primNames[primIdx]); putchar(' '); println(op); }
     if (0 <= primIdx && primIdx < sizeof(prims) / sizeof(value_t (*)(value_t))) prims[primIdx](op);
     else                                                                        error("invalid primitive %d\n", primIdx);
     ip = Int(IntValue(ip) + 1);
@@ -384,9 +415,42 @@ void printOT() {
   }
 }
 
+Prim(StrCmp, _,   { value_t s1 = _p(Pop);
+                    value_t s2 = _p(Pop);
+                    int idx = 0;
+                    while (1) {
+                      int c1   = IntValue(slotAt(s1, Int(idx)));
+                      int c2   = IntValue(slotAt(s2, Int(idx)));
+                      int diff = c1 - c2;
+                      if      (diff != 0) return Int(diff);
+                      else if (c1 == 0)   return Int(0);
+                      idx++;
+                    } })
+
+Prim(Intern, s,   { value_t internedStrings = deref(internedStringsRef);
+                    value_t curr = internedStrings;
+                    while (curr != nil) {
+                      value_t is = car(curr);
+                      _p1(Push, is);
+                      _p1(Push, s);
+                      if (_p(StrCmp) == Int(0))
+                        return is;
+                      curr = cdr(curr);
+                    }
+                    _p1(Push, s); // this Push and the Pop below are needed in case s is not already on the stack
+                    deref_(internedStringsRef, cons(s, internedStrings));
+                    _p(Pop);
+                    return s; })
+
+value_t mkObj(value_t _class, size_t numSlots) {
+  value_t obj = mk(numSlots);
+  classOf_(obj, _class);
+  return obj;
+}
+
 value_t stringify(char *s) {
   int size = strlen(s) + 1, idx = 0;
-  value_t r = mk(size);
+  value_t r = mkObj(cString, size);
   while (1) {
     slotAtPut(r, Int(idx), Int(*s));
     if (*s == 0)
@@ -396,52 +460,17 @@ value_t stringify(char *s) {
   return r;
 }
 
-Prim(StrCmp, _, { value_t s1 = _p(Pop, nil);
-                  value_t s2 = _p(Pop, nil);
-                  int idx = 0;
-                  while (1) {
-                    int c1   = IntValue(slotAt(s1, Int(idx)));
-                    int c2   = IntValue(slotAt(s2, Int(idx)));
-                    int diff = c1 - c2;
-                    if      (diff != 0) return Int(diff);
-                    else if (c1 == 0)   return Int(0);
-                    idx++;
-                  } })
-
-Prim(Intern, s, { value_t internedStrings = deref(internedStringsRef);
-                  value_t curr = internedStrings;
-                  while (curr != nil) {
-                    value_t is = car(curr);
-                    _p(Push, is);
-                    _p(Push, s);
-                    if (_p(StrCmp, nil) == Int(0))
-                      return is;
-                    curr = cdr(curr);
-                  }
-                  _p(Push, s);   // this Push and the Pop below are needed in case s is not already on the stack
-                  deref_(internedStringsRef, cons(s, internedStrings));
-                  _p(Pop,  nil);
-                  return s; })
-
-void printString(value_t s) {
-  int idx = 0;
-  while (1) {
-    int c = IntValue(slotAt(s, Int(idx++)));
-    if (c == 0)
-      break;
-    putchar(c);
-  } 
-}
-
-void printInternedStrings(void) {
-  value_t curr = deref(internedStringsRef);
-  while (curr != nil) {
-    value_t s = car(curr);
-    printf("%d: ``", OopValue(s));
-    printString(s);
-    puts("''");
-    curr = cdr(curr);
-  }
+void installPrimAsMethod(value_t _class, value_t sel, value_t prim) {
+  // TODO: generalize this to any arity
+  value_t closure = _p1(Push, ref(nil));
+  value_t code    = deref_(closure, mk(5));
+  slotAtPut(code, Int(0), cons(Arg,    Int(1))); // push boxed receiver
+  slotAtPut(code, Int(1), cons(Unbox,  nil));    // unbox the receiver on the stack
+  slotAtPut(code, Int(2), cons(Push,   prim));   // push the primitive
+  slotAtPut(code, Int(3), cons(DoPrim, Int(1)));
+  slotAtPut(code, Int(4), cons(Ret,    nil));    // return (DoPrim's result is top of stack)
+  _p1(Push, sel);
+  _p1(InstMeth, _class);
 }
 
 void init(void) {
@@ -455,36 +484,48 @@ void init(void) {
 
   // "objectify" primNames
   for (int p = 0; p < numPrims; p++)
-    primNames[p] = (void *)_p(Intern, stringify((char *)primNames[p]));
+    primNames[p] = (void *)_p1(Intern, stringify((char *)primNames[p]));
 
-  _p(Push, nil); // slotNames
-  _p(Push, nil); // super
-  cObject = _p(MkClass, _p(Intern,stringify("Object")));
+  sPrint   = _p1(Intern, stringify("print"));
+  sPrintln = _p1(Intern, stringify("println"));
+
+  cObject = _p3(MkClass, _p1(Intern, stringify("Object")), nil, nil);
+  installPrimAsMethod(cObject, sPrint,   ObjPrint);
+  //installPrimAsMethod(cObject, sPrintln, ObjPrintln);
   for (int idx = 0; idx < OTSize; idx++) {
     if (IntValue(OT[idx].numSlots) < 0)
       continue;
     OT[idx]._class = cObject;
   }
 
-  value_t selector    = _p(Intern, stringify("aMethod"));
-  value_t closure     = addGlobal(ref(nil));
+  cInt = _p3(MkClass, _p1(Intern, stringify("SmallInteger")), cObject, nil);
+  // installPrimAsMethod(cInt, sPrint, IntPrint);
+
+  cString = _p3(MkClass, _p1(Intern, stringify("String")), cObject, nil);
+  value_t isNode = deref(internedStringsRef);
+  while (isNode != nil) {
+    OT[OopValue(car(isNode))]._class = cString;
+    isNode = cdr(isNode);
+  }
+  installPrimAsMethod(cString, sPrint, StrPrint);
+
+  value_t closure     = _p1(Push, ref(nil));                          // push closure
+  value_t selector    = _p1(Push, _p1(Intern, stringify("aMethod"))); // push selector
   value_t closureCode = deref_(closure, cons(nil, nil));
   car_(closureCode, cons(Push, Int(1234)));
   cdr_(closureCode, cons(Ret, nil));
-  _p(Push, closure);
-  _p(Push, selector);
-  _p(InstMeth, cObject);
+  _p1(InstMeth, cObject);
 }
 
 int main(void) {
   init();
 
-  value_t sel  = _p(Intern, stringify("aMethod"));
+  //value_t sel  = _p1(Intern, stringify("aMethod"));
   value_t prog = addGlobal(mk(11));
   slotAtPut(prog, Int(0),  cons(PrepCall, nil));
-  slotAtPut(prog, Int(1),  cons(Push,     sel));
+  slotAtPut(prog, Int(1),  cons(Push,     sPrint));
   slotAtPut(prog, Int(2),  cons(Box,      nil));
-  slotAtPut(prog, Int(3),  cons(Push,     Int(1)));
+  slotAtPut(prog, Int(3),  cons(Push,     _p1(Intern, stringify("hello world"))));
   slotAtPut(prog, Int(4),  cons(Box,      nil));
   slotAtPut(prog, Int(5),  cons(Push,     Int(2)));
   slotAtPut(prog, Int(6),  cons(Box,      nil));
@@ -494,6 +535,7 @@ int main(void) {
   slotAtPut(prog, Int(10), cons(Halt,     nil));
 
   interp(prog);
+
   return 0;
 }
 
