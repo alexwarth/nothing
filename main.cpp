@@ -4,7 +4,6 @@
 #include <string.h>
 #include <assert.h>
 
-// TODO: write Object's println method (figure out how to send a message from a prim -- not necessary here, but definitely useful)
 // TODO: prims, globals, vtables should all be cheapdict...
 // TODO: make everything OO (even the OT, ref-cells used for FVs and args), make "global obj", add recv to stack frame, etc.
 // TODO: make strings instances of String, made up of instances of Char
@@ -349,7 +348,8 @@ Prim(Ret, _,           { value_t r = _p(Pop);
                          ip  = _p(Pop);
                          return _p1(Push, r); })
 
-Prim(ObjPrint,   o,   { print(o); })
+Prim(ObjPrint,   o,    { print(o);      })
+Prim(Println,    _,    { putchar('\n'); })
 
 Prim(Jmp, n,           { ip = Int(IntValue(ip) + IntValue(n)); return nil;      })
 Prim(JZ,  n,           { return IntValue(_p(Pop)) == 0 ? _p1(Jmp, n) : nil; })
@@ -490,13 +490,25 @@ void init(void) {
   sPrintln = _p1(Intern, stringify("println"));
 
   cObject = _p3(MkClass, _p1(Intern, stringify("Object")), nil, nil);
-  installPrimAsMethod(cObject, sPrint,   ObjPrint);
-  //installPrimAsMethod(cObject, sPrintln, ObjPrintln);
   for (int idx = 0; idx < OTSize; idx++) {
     if (IntValue(OT[idx].numSlots) < 0)
       continue;
     OT[idx]._class = cObject;
   }
+  installPrimAsMethod(cObject, sPrint,   ObjPrint);
+  value_t closure     = _p1(Push, ref(nil));                // push closure
+  value_t selector    = _p1(Push, sPrintln);                // push selector
+  value_t closureCode = deref_(closure, mk(9));
+  slotAtPut(closureCode, Int(0), cons(PrepCall, nil));
+  slotAtPut(closureCode, Int(1), cons(Push,     sPrint));
+  slotAtPut(closureCode, Int(2), cons(Box,      nil));
+  slotAtPut(closureCode, Int(3), cons(Arg,      Int(1)));  // the receiver
+  slotAtPut(closureCode, Int(4), cons(Send,     Int(1)));
+  slotAtPut(closureCode, Int(5), cons(Pop,      nil));     // discard return value
+  slotAtPut(closureCode, Int(6), cons(Push,     Println)); // push the primitive
+  slotAtPut(closureCode, Int(7), cons(DoPrim,   Int(0)));
+  slotAtPut(closureCode, Int(8), cons(Ret,      nil));     // return (DoPrim's result is top of stack)
+  _p1(InstMeth, cObject);
 
   cInt = _p3(MkClass, _p1(Intern, stringify("SmallInteger")), cObject, nil);
   // installPrimAsMethod(cInt, sPrint, IntPrint);
@@ -509,11 +521,11 @@ void init(void) {
   }
   installPrimAsMethod(cString, sPrint, StrPrint);
 
-  value_t closure     = _p1(Push, ref(nil));                          // push closure
-  value_t selector    = _p1(Push, _p1(Intern, stringify("aMethod"))); // push selector
-  value_t closureCode = deref_(closure, cons(nil, nil));
-  car_(closureCode, cons(Push, Int(1234)));
-  cdr_(closureCode, cons(Ret, nil));
+  closure     = _p1(Push, ref(nil));                          // push closure
+  selector    = _p1(Push, _p1(Intern, stringify("aMethod"))); // push selector
+  closureCode = deref_(closure, mk(2));
+  slotAtPut(closureCode, Int(0), cons(Push, Int(1234)));
+  slotAtPut(closureCode, Int(1), cons(Ret, nil));
   _p1(InstMeth, cObject);
 }
 
@@ -523,7 +535,7 @@ int main(void) {
   //value_t sel  = _p1(Intern, stringify("aMethod"));
   value_t prog = addGlobal(mk(11));
   slotAtPut(prog, Int(0),  cons(PrepCall, nil));
-  slotAtPut(prog, Int(1),  cons(Push,     sPrint));
+  slotAtPut(prog, Int(1),  cons(Push,     sPrintln));
   slotAtPut(prog, Int(2),  cons(Box,      nil));
   slotAtPut(prog, Int(3),  cons(Push,     _p1(Intern, stringify("hello world"))));
   slotAtPut(prog, Int(4),  cons(Box,      nil));
