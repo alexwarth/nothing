@@ -4,6 +4,9 @@
 #include <string.h>
 #include <assert.h>
 
+// finish getting send() to work (very close!)
+
+// TODO: make getters and setters (maybe should be a single variadic method)
 // TODO: prims, globals, vtables should all be cheapdict...
 // TODO: make everything OO (even the OT, ref-cells used for FVs and args), make "global obj", add recv to stack frame, etc.
 // TODO: make strings instances of String, made up of instances of Char
@@ -23,7 +26,7 @@
 //                     oldIpb                        load/store(3)
 //                     oldIp                         load/store(4)
 
-const int DEBUG = 0;
+const int DEBUG = 1;
 
 typedef unsigned char byte_t;
 typedef int           value_t;
@@ -90,14 +93,15 @@ void growOT(void) {
 
 value_t mk(size_t numSlots);
 
+void println(value_t);
 #define deref(r)     slotAt(r, Int(0))
 #define deref_(r, v) slotAtPut(r, Int(0), v)
-#define ref(a)       ({ value_t _r = mk(1); deref_(_r, a); _r; })
+#define ref(a)       ({ value_t _a = a, _r = mk(1); deref_(_r, _a); _r; })
 #define car(cc)      slotAt   (cc, Int(0))
 #define car_(cc, v)  slotAtPut(cc, Int(0), v)
 #define cdr(cc)      slotAt   (cc, Int(1))
 #define cdr_(cc, v)  slotAtPut(cc, Int(1), v)
-#define cons(a, b)   ({ value_t _r = mk(2); car_(_r, a); cdr_(_r, b); _r; })
+#define cons(a, b)   ({ value_t _a = a, _b = b, _r = mk(2); car_(_r, _a); cdr_(_r, _b); _r; })
 
 value_t numSlots(value_t oop)                            { assert(isOop(oop));
                                                            return OT[OopValue(oop)].numSlots; }
@@ -191,7 +195,7 @@ void _print(value_t v, value_t n, value_t selIdx) {
 void print(value_t v)   { _print(v, Int(1), Int(-1)); }
 void println(value_t v) { print(v); putchar('\n');    }
 
-const size_t MaxNumPrims = 32;
+const size_t MaxNumPrims = 64;
 value_t (*prims[MaxNumPrims])(value_t);
 void *primNames[MaxNumPrims];
 size_t numPrims = 0;
@@ -205,7 +209,7 @@ value_t store(value_t offset, value_t v)        { return slotAtPut(stack, Int(In
 value_t load (value_t offset)                   { return slotAt   (stack, Int(IntValue(fp) - IntValue(offset)));    }
 
 
-#define Prim(Name, Arg, Body)       value_t p##Name(value_t Arg) { Body } \
+#define Prim(Name, Arg, Body)       value_t p##Name(value_t Arg) { Body; return nil; } \
                                     value_t Name = addPrim(#Name, p##Name);
 
 #define _p(Name)                                                         prims[IntValue(Name)](nil)
@@ -254,7 +258,7 @@ Prim(PrepCall, _,      { _p1(Push, nil); // make room for ip
                          _p1(Push, nil); // make room for nArgs
                          return nil; })
 
-Prim(Call, nArgs,      { ipb = deref(slotAt(slotAt(stack, Int(IntValue(sp) - 1 - IntValue(nArgs))), Int(0))); // unbox fn, get code
+Prim(Call, nArgs,      { ipb = deref(slotAt(slotAt(stack, Int(IntValue(sp) - 1 - IntValue(nArgs))), Int(0))); // unbox fn & get code
                          fp  = Int(IntValue(sp) - IntValue(nArgs) - 1);
                          store(Int(1), nArgs);
                          store(Int(4), ip);
@@ -304,7 +308,7 @@ Prim(MkClass, name,    { value_t super     = _p(Pop);
                            cls->numSlots = Int(IntValue(cls->numSlots) + 1);
                            slotNames = cdr(slotNames);
                          }
-                         return _class; })                       
+                         return _class; })
 
 Prim(StrPrint, s,     { int idx = 0;
                         while (1) {
@@ -348,12 +352,9 @@ Prim(Ret, _,           { value_t r = _p(Pop);
                          ip  = _p(Pop);
                          return _p1(Push, r); })
 
-Prim(ObjPrint,   o,    { print(o);      })
-Prim(Println,    _,    { putchar('\n'); })
-
-Prim(Jmp, n,           { ip = Int(IntValue(ip) + IntValue(n)); return nil;      })
-Prim(JZ,  n,           { return IntValue(_p(Pop)) == 0 ? _p1(Jmp, n) : nil; })
-Prim(JNZ, n,           { return IntValue(_p(Pop)) != 0 ? _p1(Jmp, n) : nil; })
+Prim(Jmp, n,           { ip = Int(IntValue(ip) + IntValue(n));    })
+Prim(JZ,  n,           { if (IntValue(_p(Pop)) == 0) _p1(Jmp, n); })
+Prim(JNZ, n,           { if (IntValue(_p(Pop)) != 0) _p1(Jmp, n); })
 
 Prim(DoPrim, n,        { value_t prim = _p(Pop);
                          value_t arg1 = n > Int(0) ? _p(Pop) : nil;
@@ -378,21 +379,37 @@ void printState(void) {
   printf("\\---------------------------------------------------------------------/\n");
 }
 
-void interp(value_t prog) {
-  fp  = sp;
-  ipb = prog;
-  ip  = Int(0);
+value_t interp(value_t prog = nil, value_t retFp = Int(-1)) {
+  if (prog != nil) {
+    ipb = prog;
+    ip  = Int(0);
+  }
   while (1) {
     value_t instr = slotAt(ipb, ip), primIdx = IntValue(car(instr)), op = cdr(instr);
     if (DEBUG) { puts("\n\n"); printState(); putchar('\n'); _p1(StrPrint, (value_t)primNames[primIdx]); putchar(' '); println(op); }
-    if (0 <= primIdx && primIdx < sizeof(prims) / sizeof(value_t (*)(value_t))) prims[primIdx](op);
-    else                                                                        error("invalid primitive %d\n", primIdx);
+    if (0 <= primIdx && primIdx < numPrims) prims[primIdx](op);
+    else                                    error("%d is not a valid primitive\n", primIdx);
     ip = Int(IntValue(ip) + 1);
     if (DEBUG) { putchar('\n'); printState(); printf("\n\n\n"); }
-    if (primIdx == IntValue(Halt))
+    if (primIdx == IntValue(Halt) || primIdx == IntValue(Ret) && fp == retFp)
       break;
   }
+  return _p(Pop);
 }
+
+value_t send(value_t sel, value_t recv) {
+  _p(PrepCall);
+  _p1(Push, sel ); _p(Box);
+  _p1(Push, recv); _p(Box);
+  value_t _retFp = fp;
+  _p1(Send, Int(1));
+  ip = Int(IntValue(ip) + 1);
+  return interp(nil, _retFp);
+}
+
+Prim(ObjPrint,   o, { print(o);      })
+Prim(ObjPrintln, o, { send(sPrint, o); putchar('\n'); })
+Prim(Println,    _, { putchar('\n'); })
 
 /* Print all contents in the object table. */
 void printOT() {
@@ -477,14 +494,15 @@ void init(void) {
   OTSize = 0;
   growOT();
   sp = Int(0);
-  nil = mk(0);
+  nil = mk(0); // by allocating it first, nil gets to be 0
   globals = cons(nil, nil);
   stack = addGlobal(mk(10240));
   internedStringsRef = addGlobal(ref(nil));
 
   // "objectify" primNames
-  for (int p = 0; p < numPrims; p++)
+  for (int p = 0; p < numPrims; p++) {
     primNames[p] = (void *)_p1(Intern, stringify((char *)primNames[p]));
+  }
 
   sPrint   = _p1(Intern, stringify("print"));
   sPrintln = _p1(Intern, stringify("println"));
@@ -495,44 +513,39 @@ void init(void) {
       continue;
     OT[idx]._class = cObject;
   }
-  installPrimAsMethod(cObject, sPrint,   ObjPrint);
+  installPrimAsMethod(cObject, sPrint,   ObjPrint  );
+  installPrimAsMethod(cObject, sPrintln, ObjPrintln);
+/*
   value_t closure     = _p1(Push, ref(nil));                // push closure
   value_t selector    = _p1(Push, sPrintln);                // push selector
   value_t closureCode = deref_(closure, mk(9));
   slotAtPut(closureCode, Int(0), cons(PrepCall, nil));
   slotAtPut(closureCode, Int(1), cons(Push,     sPrint));
   slotAtPut(closureCode, Int(2), cons(Box,      nil));
-  slotAtPut(closureCode, Int(3), cons(Arg,      Int(1)));  // the receiver
+  slotAtPut(closureCode, Int(3), cons(Arg,      Int(1)));  // the receiver (already boxed)
   slotAtPut(closureCode, Int(4), cons(Send,     Int(1)));
   slotAtPut(closureCode, Int(5), cons(Pop,      nil));     // discard return value
   slotAtPut(closureCode, Int(6), cons(Push,     Println)); // push the primitive
   slotAtPut(closureCode, Int(7), cons(DoPrim,   Int(0)));
   slotAtPut(closureCode, Int(8), cons(Ret,      nil));     // return (DoPrim's result is top of stack)
   _p1(InstMeth, cObject);
+*/
 
   cInt = _p3(MkClass, _p1(Intern, stringify("SmallInteger")), cObject, nil);
   // installPrimAsMethod(cInt, sPrint, IntPrint);
 
   cString = _p3(MkClass, _p1(Intern, stringify("String")), cObject, nil);
-  value_t isNode = deref(internedStringsRef);
-  while (isNode != nil) {
-    OT[OopValue(car(isNode))]._class = cString;
-    isNode = cdr(isNode);
+  value_t curr = deref(internedStringsRef);
+  while (curr != nil) {
+    OT[OopValue(car(curr))]._class = cString;
+    curr = cdr(curr);
   }
   installPrimAsMethod(cString, sPrint, StrPrint);
-
-  closure     = _p1(Push, ref(nil));                          // push closure
-  selector    = _p1(Push, _p1(Intern, stringify("aMethod"))); // push selector
-  closureCode = deref_(closure, mk(2));
-  slotAtPut(closureCode, Int(0), cons(Push, Int(1234)));
-  slotAtPut(closureCode, Int(1), cons(Ret, nil));
-  _p1(InstMeth, cObject);
 }
 
 int main(void) {
   init();
 
-  //value_t sel  = _p1(Intern, stringify("aMethod"));
   value_t prog = addGlobal(mk(11));
   slotAtPut(prog, Int(0),  cons(PrepCall, nil));
   slotAtPut(prog, Int(1),  cons(Push,     sPrintln));
@@ -546,7 +559,14 @@ int main(void) {
   slotAtPut(prog, Int(9),  cons(Send,     Int(3)));
   slotAtPut(prog, Int(10), cons(Halt,     nil));
 
+  fp = sp;
   interp(prog);
+
+/*
+  value_t ans = send(sPrintln, _p1(Intern, stringify("this is a test")));
+  printf(" => "); println(ans);
+  putchar('\n');  printState();
+*/
 
   return 0;
 }
