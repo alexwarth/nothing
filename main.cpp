@@ -4,8 +4,6 @@
 #include <string.h>
 #include <assert.h>
 
-// finish getting send() to work (very close!)
-
 // TODO: make getters and setters (maybe should be a single variadic method)
 // TODO: prims, globals, vtables should all be cheapdict...
 // TODO: make everything OO (even the OT, ref-cells used for FVs and args), make "global obj", add recv to stack frame, etc.
@@ -26,13 +24,13 @@
 //                     oldIpb                        load/store(3)
 //                     oldIp                         load/store(4)
 
-const int DEBUG = 1;
+const int DEBUG = 0;
 
 typedef unsigned char byte_t;
 typedef int           value_t;
 
 value_t nil, stack, sp, globals, ipb, ip, fp, internedStringsRef,
-        cObject, cInt, cString, cVar, cClosure,
+        cObject, cInt, cString, cVar, cClosure, cNil, cClass,
         sPrint, sPrintln;
 
 #define allocate(N, T) ((T *) calloc(N, sizeof(T)))
@@ -343,7 +341,7 @@ Prim(Send, nArgs,      { fp = Int(IntValue(sp) - IntValue(nArgs) - 1);
                          value_t method = _p(Lookup);
                          ipb = slotAt(method, Int(0)); // get the code out of the closure
                          ip = Int(-1);
-                         return nil; })
+                         return ipb; })
 
 Prim(Ret, _,           { value_t r = _p(Pop);
                          sp  = Int(IntValue(fp) - 1);
@@ -375,15 +373,13 @@ void printState(void) {
   printf("fp: "); println(fp);
   printf("/---------------------------------------------------------------------\\\n");
   int spv = IntValue(sp);
-  while (spv-- > 0) { fputs("  ", stdout); println(slotAt(stack, Int(spv))); }
+  while (spv-- > 0) { printf("  "); println(slotAt(stack, Int(spv))); }
   printf("\\---------------------------------------------------------------------/\n");
 }
 
-value_t interp(value_t prog = nil, value_t retFp = Int(-1)) {
-  if (prog != nil) {
-    ipb = prog;
-    ip  = Int(0);
-  }
+value_t interp(value_t prog, value_t retFp = Int(-1)) {
+  ipb = prog;
+  ip  = Int(0);
   while (1) {
     value_t instr = slotAt(ipb, ip), primIdx = IntValue(car(instr)), op = cdr(instr);
     if (DEBUG) { puts("\n\n"); printState(); putchar('\n'); _p1(StrPrint, (value_t)primNames[primIdx]); putchar(' '); println(op); }
@@ -391,8 +387,12 @@ value_t interp(value_t prog = nil, value_t retFp = Int(-1)) {
     else                                    error("%d is not a valid primitive\n", primIdx);
     ip = Int(IntValue(ip) + 1);
     if (DEBUG) { putchar('\n'); printState(); printf("\n\n\n"); }
-    if (primIdx == IntValue(Halt) || primIdx == IntValue(Ret) && fp == retFp)
+    if (primIdx == IntValue(Halt))
       break;
+    else if (primIdx == IntValue(Ret) && fp == retFp) {
+      ip = Int(IntValue(ip) - 1); // undo increment of ip
+      break;
+    }
   }
   return _p(Pop);
 }
@@ -402,9 +402,8 @@ value_t send(value_t sel, value_t recv) {
   _p1(Push, sel ); _p(Box);
   _p1(Push, recv); _p(Box);
   value_t _retFp = fp;
-  _p1(Send, Int(1));
-  ip = Int(IntValue(ip) + 1);
-  return interp(nil, _retFp);
+  _p1(Send, Int(1)); // makes ipb point to method's code
+  return interp(ipb, _retFp);
 }
 
 Prim(ObjPrint,   o, { print(o);      })
@@ -478,7 +477,7 @@ value_t stringify(char *s) {
 }
 
 void installPrimAsMethod(value_t _class, value_t sel, value_t prim) {
-  // TODO: generalize this to any arity
+  // TODO: make sure that this works for any arity
   value_t closure = _p1(Push, ref(nil));
   value_t code    = deref_(closure, mk(5));
   slotAtPut(code, Int(0), cons(Arg,    Int(1))); // push boxed receiver
@@ -545,29 +544,9 @@ void init(void) {
 
 int main(void) {
   init();
-
-  value_t prog = addGlobal(mk(11));
-  slotAtPut(prog, Int(0),  cons(PrepCall, nil));
-  slotAtPut(prog, Int(1),  cons(Push,     sPrintln));
-  slotAtPut(prog, Int(2),  cons(Box,      nil));
-  slotAtPut(prog, Int(3),  cons(Push,     _p1(Intern, stringify("hello world"))));
-  slotAtPut(prog, Int(4),  cons(Box,      nil));
-  slotAtPut(prog, Int(5),  cons(Push,     Int(2)));
-  slotAtPut(prog, Int(6),  cons(Box,      nil));
-  slotAtPut(prog, Int(7),  cons(Push,     Int(3)));
-  slotAtPut(prog, Int(8),  cons(Box,      nil));
-  slotAtPut(prog, Int(9),  cons(Send,     Int(3)));
-  slotAtPut(prog, Int(10), cons(Halt,     nil));
-
   fp = sp;
-  interp(prog);
-
-/*
-  value_t ans = send(sPrintln, _p1(Intern, stringify("this is a test")));
+  value_t ans = send(sPrintln, _p1(Intern, stringify("Object>>println and send macro worked!")));
   printf(" => "); println(ans);
-  putchar('\n');  printState();
-*/
-
   return 0;
 }
 
