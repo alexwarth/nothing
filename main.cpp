@@ -4,13 +4,11 @@
 #include <string.h>
 #include <assert.h>
 
-// TODO: make MkClass create dummy instance and "family" object (has vtable, size info, "class" name, super, etc.)
-// TODO: implement a MkNew("class", numAddlSlots) -- add'l slots are like arrays, accessed by at:/at:put:
-
-// TODO: implement getters and setters (maybe should be a single variadic method)
+// TODO: make characters be instances of Char, not just Ints
+// TODO: syntactic sugar: <- is a low-priority "there's another argument" next, e.g., myArray at: 5 <- 6
 // TODO: make a "CheapDictionary" class, use it for vtables, prims, globals, etc.
-// TODO: make everything OO (even the OT, ref-cells used for FVs and args), make "global obj", add recv to stack frame, etc.
-// TODO: make characters be instances of Char
+// TODO: make everything OO (the OT, ref-cells used for FVs and args, etc.)
+// TODO: add a primitive that replaces the implementation of a primitive with a method (for bootstrapping)
  
 // Stack Layout:       ... local vars, etc. ...
 //                     arg(n)                        load/store(-nArgs)
@@ -30,8 +28,8 @@ typedef unsigned char byte_t;
 typedef int           value_t;
 
 value_t nil, stack, sp, globals, ipb, ip, fp, internedStringsRef,                        // registers, etc.
-        Obj, Nil, Int, Char, Str, Var, Closure,                                          // "classes", i.e., "primordial instances"
-        sPrint, sPrintln, sAdd, sSub, sMul;                                              // selectors
+        Obj, Nil, Int, Char, Str, Var, Closure, Class,                                   // "classes", i.e., "primordial instances"
+        sIdentityHash, sPrint, sPrintln, sAdd, sSub, sMul;                               // selectors
 
 #define allocate(N, T) ((T *) calloc(N, sizeof(T)))                                      // calloc fills memory w/ 0s, i.e., nils
 
@@ -143,9 +141,9 @@ size_t gc(void) {
     if (marked[i])
       continue;
     free(OT[i].ptr.slots);
-    OT[i].numSlots  = Int(-1);
-    OT[i].ptr.next  = freeList;
-    freeList        = &OT[i];
+    OT[i].numSlots = Int(-1);
+    OT[i].ptr.next = freeList;
+    freeList       = &OT[i];
   }
   if (debug) printf("GC reclaimed %ld OTEntries\n", OTSize - numMarked);
   return OTSize - numMarked;
@@ -159,8 +157,8 @@ value_t mk(size_t numSlots) {
   }
   OTEntry *newGuy = freeList;
   freeList = freeList->ptr.next;
-  newGuy->numSlots = Int(numSlots);
-  newGuy->cls = Obj;
+  newGuy->numSlots  = Int(numSlots);
+  newGuy->cls       = Obj;
   newGuy->ptr.slots = allocate(numSlots, value_t);
   return Oop(newGuy - OT);
 }
@@ -217,6 +215,11 @@ Prim(Pop, _,           { assert(sp > Int(0));
                          slotAtPut(stack, sp, nil);     // clear this slot to prevent memory leak
                          return r; })
 
+/*
+Prim(SlotAt,    recv,  { value_t idx = _p(Pop);                        return slotAt   (recv, idx);      })
+Prim(SlotAtPut, recv,  { value_t idx = _p(Pop); value_t val = _p(Pop); return slotAtPut(recv, idx, val); })
+*/
+
 Prim(Eq, _,            { return _p1(Push, Int(IntValue(_p(Pop)) == IntValue(_p(Pop)))); })
 
 Prim(Add, _,           { value_t op2 = _p(Pop); return _p1(Push, Int(IntValue(_p(Pop)) + IntValue(op2))); })
@@ -261,6 +264,13 @@ Prim(TCall, newNArgs,  { for (int i = IntValue(newNArgs); i >= 0; i--)
                          sp  = Int(IntValue(fp) + IntValue(newNArgs) + 1);
                          return nil; })
 
+Prim(Ret, _,           { value_t r = _p(Pop);
+                         sp  = Int(IntValue(fp) - 1);
+                         fp  = _p(Pop);
+                         ipb = _p(Pop);
+                         ip  = _p(Pop);
+                         return _p1(Push, r); })
+
 Prim(InstMeth, cls,    { value_t sel      = _p(Pop);
                          value_t impl     = _p(Pop);
                          classSlots *_cls = asClass(cls);
@@ -275,28 +285,56 @@ Prim(InstMeth, cls,    { value_t sel      = _p(Pop);
                          int oldVTSize = IntValue(_cls->vTableSize);
                          int newVTSize = oldVTSize * 2;
                          _cls->vTableSize = Int(newVTSize);
-                         value_t arr;
-                         arr = mk(newVTSize); memcpy(slots(arr), slots(_cls->sels),  newVTSize * sizeof(value_t)); _cls->sels  = arr;
-                         arr = mk(newVTSize); memcpy(slots(arr), slots(_cls->impls), newVTSize * sizeof(value_t)); _cls->impls = arr;
+                         value_t m;
+                         m = mk(newVTSize); memcpy(slots(m), slots(_cls->sels),  newVTSize * sizeof(value_t)); _cls->sels  = m;
+                         m = mk(newVTSize); memcpy(slots(m), slots(_cls->impls), newVTSize * sizeof(value_t)); _cls->impls = m;
                                 slotAtPut(_cls->sels,  Int(oldVTSize), sel);
                          return slotAtPut(_cls->impls, Int(oldVTSize), impl); })
 
+Prim(ObjGetSet, recv,  { value_t nArgs = load(Int(1)); // the number of arguments passed to the method, not the primitive
+                         value_t idx   = _p(Pop);
+                         switch (IntValue(nArgs)) {
+                           case 1:  return slotAt   (recv, idx);
+                           case 2:  return slotAtPut(recv, idx, deref(load(Int(-2))));
+                           default: error("getter/setter called with %d arguments (must be 1 or 2)", IntValue(nArgs));
+                         } })
+
+Prim(DoPrim, n,        { value_t prim = _p(Pop);
+                         value_t arg1 = n > Int(0) ? _p(Pop) : nil;
+                         return _p1(Push, _p1(prim, arg1)); })
+
+Prim(InstGetSet, cls,  { value_t name     = _p(Pop);
+                         value_t idx      = _p(Pop);
+                         classSlots *_cls = asClass(cls);
+                                            slotAtPut(_cls->sels,  idx, name);
+                         value_t closure  = slotAtPut(_cls->impls, idx, ref(nil));
+                         value_t code     = deref_(closure, mk(6));
+                         slotAtPut(code, Int(0), cons(Push,   idx));
+                         slotAtPut(code, Int(1), cons(Arg,    Int(1)));    // push boxed receiver
+                         slotAtPut(code, Int(2), cons(Unbox,  nil));       // unbox the receiver on the stack
+                         slotAtPut(code, Int(3), cons(Push,   ObjGetSet)); // push the primitive
+                         slotAtPut(code, Int(4), cons(DoPrim, Int(2)));
+                         slotAtPut(code, Int(5), cons(Ret,    nil));       // return (DoPrim's result is top of stack)
+                       })
+
 Prim(MkClass, name,    { value_t cls       = addGlobal(mk(sizeof(classSlots) / sizeof(value_t)));
-                         value_t super     = _p(Pop);
-                         value_t slotNames = _p(Pop);
                          classSlots *_cls  = asClass(cls);
                          _cls->name        = name;
-                         _cls->super       = super;
-                         _cls->slotNames   = slotNames;
-                         _cls->numSlots    = super == nil ? Int(0) : asClass(super)->numSlots;
+                         _cls->super       = _p(Pop);
+                         _cls->slotNames   = _p(Pop);
+                         _cls->numSlots    = Int(IntValue(numSlots(_cls->slotNames)) +
+                                                 IntValue(_cls->super == nil ? Int(0) : asClass(_cls->super)->numSlots));
                          _cls->vTableSize  = Int(16);
                          _cls->sels        = mk(IntValue(_cls->vTableSize));
                          _cls->impls       = mk(IntValue(_cls->vTableSize));
-                         _cls->super       = super;
-                         for (; slotNames != nil; slotNames = cdr(slotNames))
-                           // TODO: install getter and setter for this slot
-                           _cls->numSlots = Int(IntValue(_cls->numSlots) + 1);
+                         for (value_t idx = Int(0); idx < numSlots(_cls->slotNames); idx = Int(IntValue(idx) + 1))
+                           _p3(InstGetSet, cls, slotAt(_cls->slotNames, idx), idx);
                          return cls; })
+
+Prim(MkObj, cls,       { value_t nAddlSlots = _p(Pop);
+                         value_t obj        = mk((cls == nil ? 0 : IntValue(asClass(cls)->numSlots)) + IntValue(nAddlSlots));
+                         classOf_(obj, cls);
+                         return obj; })
 
 Prim(StrPrint, s,     { int idx = 0;
                         while (1) {
@@ -321,8 +359,8 @@ Prim(Lookup, _,        { // the method cache should be implemented in "userland"
                              }
                            cls = _cls->super;
                          }
-                         _p1(StrPrint, asClass(classOf(recv))->name); printf(" does not understand "); _p1(StrPrint, sel); putchar('\n');
-                         error("^^ message not understood ^^");
+                         char *cStringify(value_t);
+                         error("%s does not understand \"%s\"", cStringify(asClass(classOf(recv))->name), cStringify(sel));
                          return nil; })
 
 Prim(Send, nArgs,      { fp = Int(IntValue(sp) - IntValue(nArgs) - 1);
@@ -333,20 +371,9 @@ Prim(Send, nArgs,      { fp = Int(IntValue(sp) - IntValue(nArgs) - 1);
                          ip = Int(-1);
                          return ipb; })
 
-Prim(Ret, _,           { value_t r = _p(Pop);
-                         sp  = Int(IntValue(fp) - 1);
-                         fp  = _p(Pop);
-                         ipb = _p(Pop);
-                         ip  = _p(Pop);
-                         return _p1(Push, r); })
-
 Prim(Jmp, n,           { ip = Int(IntValue(ip) + IntValue(n));    })
 Prim(JZ,  n,           { if (IntValue(_p(Pop)) == 0) _p1(Jmp, n); })
 Prim(JNZ, n,           { if (IntValue(_p(Pop)) != 0) _p1(Jmp, n); })
-
-Prim(DoPrim, n,        { value_t prim = _p(Pop);
-                         value_t arg1 = n > Int(0) ? _p(Pop) : nil;
-                         return _p1(Push, _p1(prim, arg1)); })
 
 Prim(Halt, _,          { })
 
@@ -395,36 +422,37 @@ value_t interp(value_t prog, value_t retFp = Int(-1)) {
 #define send2(sel, recv, arg1)       ({ value_t retFp = PrepSend(sel, recv); PushArg(arg1);                DoSend(2, retFp); })
 #define send3(sel, recv, arg1, arg2) ({ value_t retFp = PrepSend(sel, recv); PushArg(arg1); PushArg(arg2); DoSend(3, retFp); })
 
-Prim(Newline,    _,    { putchar('\n');                    }) // TODO: replace w/ more general Char>>print
-Prim(ObjPrint,   recv, { printf("Object"); print(recv);    })
-Prim(NilPrint,   recv, { printf("nil");                    })
-Prim(IntPrint,   recv, { printf("%d", IntValue(recv));     })
-Prim(ObjPrintln, recv, { send1(sPrint, recv); _p(Newline); })
+Prim(ObjIdentityHash, recv, { return Int(recv); })
+Prim(IntIdentityHash, recv, { return Int(recv); })
 
-Prim(IntAdd,     recv, { return Int(IntValue(recv) + IntValue(deref(_p1(Arg, Int(2))))); })
-Prim(IntSub,     recv, { return Int(IntValue(recv) - IntValue(deref(_p1(Arg, Int(2))))); })
-Prim(IntMul,     recv, { return Int(IntValue(recv) * IntValue(deref(_p1(Arg, Int(2))))); })
+Prim(Newline,     _,    { putchar('\n');                                            }) // TODO: replace w/ more general Char>>print
+Prim(ObjPrint,    recv, { _p1(StrPrint, asClass(classOf(recv))->name); print(recv); })
+Prim(NilPrint,    recv, { printf("nil");                                            })
+Prim(IntPrint,    recv, { printf("%d", IntValue(recv));                             })
+Prim(ObjPrintln,  recv, { send1(sPrint, recv); _p(Newline);                         })
 
-/* Print all contents in the object table. */
-void printOT() {
-  for (int i = 0; i < OTSize; i++) {
-    OTEntry *e = &OT[i];
-    printf("%d:", i);
-    if (IntValue(e->numSlots) == -1) {
-      int next = e->ptr.next - OT;
-      printf(" free -> %d\n", next >= 0 ? next : -1);
-    }
-    else {
-      printf(" class=[(%d)], slots=", OopValue(e->cls)); // classes are show in []s
-      for (int n = 0; n < IntValue(e->numSlots); n++) {
-        value_t v = e->ptr.slots[n];
-        if (isInt(v)) printf(" %d", IntValue(v));           // ints are shown as 123
-        else          printf(" (%d)", OopValue(v));         // references are shown as (123)
-      }
-      putchar('\n');
-    }
-  }
-}
+Prim(PrintOT,     _,    { for (int i = 0; i < OTSize; i++) {
+                            OTEntry *e = &OT[i];
+                            printf("%d: ", i);
+                            if (IntValue(e->numSlots) == -1) {
+                              int next = e->ptr.next - OT;
+                              printf("(free, next=%d)\n", next >= 0 ? next : -1);
+                            }
+                            else {
+                              _p1(StrPrint, asClass(e->cls)->name); printf("[");
+                              for (int n = 0; n < IntValue(e->numSlots); n++) {
+                                value_t v = e->ptr.slots[n];
+                                if (n > 0) printf(", ");
+                                if (isInt(v)) printf("%d",   IntValue(v)); // ints are shown as 123
+                                else          printf("(%d)", OopValue(v)); // references are shown as (123)
+                              }
+                              printf("]\n");
+                            }
+                          } })
+
+Prim(IntAdd,      recv, { return Int(IntValue(recv) + IntValue(deref(_p1(Arg, Int(2))))); })
+Prim(IntSub,      recv, { return Int(IntValue(recv) - IntValue(deref(_p1(Arg, Int(2))))); })
+Prim(IntMul,      recv, { return Int(IntValue(recv) * IntValue(deref(_p1(Arg, Int(2))))); })
 
 Prim(StrCmp, _,   { value_t s1 = _p(Pop);
                     value_t s2 = _p(Pop);
@@ -451,21 +479,23 @@ Prim(Intern, s,   { value_t internedStrings = deref(internedStringsRef);
                     _p(Pop);
                     return s; })
 
-value_t mkObj(value_t cls, size_t numSlots) {
-  value_t obj = mk(numSlots);
-  classOf_(obj, cls);
-  return obj;
-}
-
 value_t stringify(char *s) {
-  int size = strlen(s) + 1, idx = 0;
-  value_t r = mkObj(Str, size);
+  int idx = 0;
+  value_t r = _p2(MkObj, Str, Int(strlen(s) + 1));
   while (1) {
     slotAtPut(r, Int(idx), Int(*s));
     if (*s == 0)
       break;
     s++; idx++;
   }
+  return r;
+}
+
+char *cStringify(value_t s) {
+  int n = IntValue(numSlots(s));
+  char *r = (char *)malloc(n);
+  for (int idx = 0; idx < n; idx++)
+    r[idx] = IntValue(slotAt(s, Int(idx)));
   return r;
 }
 
@@ -482,50 +512,49 @@ void installPrimAsMethod(value_t _class, value_t sel, value_t prim) {
 }
 
 void init(int _debug) {
-  debug = _debug;
-  OTSize = 0;
+  debug   = _debug;
+  OTSize  = 0;
   growOT();
-  sp = Int(0);
-  ip = Int(-1);
-  nil = mk(0); // allocate nil before any other objects so it gets to be 0
+  sp      = Int(0);
+  ip      = Int(-1);
+  nil     = mk(0);   // allocate nil before any other objects so it gets to be 0
   globals = cons(nil, nil);
-  stack = addGlobal(mk(10240));
+  stack   = addGlobal(mk(10240));
   internedStringsRef = addGlobal(ref(nil));
 
   // "objectify" primNames (they were C strings up to this point)
-  for (int p = 0; p < numPrims; p++) {
+  for (int p = 0; p < numPrims; p++)
     primNames[p] = (void *)_p1(Intern, stringify((char *)primNames[p]));
-  }
 
-  sPrint   = _p1(Intern, stringify("print"));
-  sPrintln = _p1(Intern, stringify("println"));
-  sAdd     = _p1(Intern, stringify("+"));
-  sSub     = _p1(Intern, stringify("-"));
-  sMul     = _p1(Intern, stringify("*"));
+  sIdentityHash = _p1(Intern, stringify("identityHash"));
+  sPrint        = _p1(Intern, stringify("print"));
+  sPrintln      = _p1(Intern, stringify("println"));
+  sAdd          = _p1(Intern, stringify("+"));
+  sSub          = _p1(Intern, stringify("-"));
+  sMul          = _p1(Intern, stringify("*"));
 
   Obj = _p3(MkClass, _p1(Intern, stringify("Obj")), nil, nil);
-  for (int idx = 0; idx < OTSize; idx++) {
-    if (IntValue(OT[idx].numSlots) < 0)
-      continue;
-    OT[idx].cls = Obj;
-  }
-  installPrimAsMethod(Obj, sPrint,   ObjPrint  );
-  installPrimAsMethod(Obj, sPrintln, ObjPrintln);
-
+    installPrimAsMethod(Obj, sIdentityHash, ObjIdentityHash); 
+    installPrimAsMethod(Obj, sPrint,        ObjPrint   );
+    installPrimAsMethod(Obj, sPrintln,      ObjPrintln );
+    for (int idx = 0; idx < OTSize; idx++) {
+      if (IntValue(OT[idx].numSlots) < 0)
+        continue;
+      OT[idx].cls = Obj;
+    }
   Int = _p3(MkClass, _p1(Intern, stringify("Int")), Obj, nil);
-  installPrimAsMethod(Int, sPrint, IntPrint);
-  installPrimAsMethod(Int, sAdd,   IntAdd);
-  installPrimAsMethod(Int, sSub,   IntSub);
-  installPrimAsMethod(Int, sMul,   IntMul);
-
+    installPrimAsMethod(Obj, sIdentityHash, IntIdentityHash); 
+    installPrimAsMethod(Int, sPrint,        IntPrint);
+    installPrimAsMethod(Int, sAdd,          IntAdd);
+    installPrimAsMethod(Int, sSub,          IntSub);
+    installPrimAsMethod(Int, sMul,          IntMul);
   Nil = _p3(MkClass, _p1(Intern, stringify("Nil")), Obj, nil);
-  classOf_(nil, Nil);
-  installPrimAsMethod(Nil, sPrint, NilPrint);
-
-  Str = _p3(MkClass, _p1(Intern, stringify("String")), Obj, nil);
-  for (value_t curr = deref(internedStringsRef); curr != nil; curr = cdr(curr))
-    OT[OopValue(car(curr))].cls = Str;
-  installPrimAsMethod(Str, sPrint, StrPrint);
+    installPrimAsMethod(Nil, sPrint, NilPrint);
+    classOf_(nil, Nil);
+  Str = _p3(MkClass, _p1(Intern, stringify("Str")), Obj, nil);
+    installPrimAsMethod(Str, sPrint, StrPrint);
+    for (value_t curr = deref(internedStringsRef); curr != nil; curr = cdr(curr))
+      OT[OopValue(car(curr))].cls = Str;
 
   fp = sp; // done at the end in the code above (intentionally) has left something on the stack
 }
@@ -536,7 +565,19 @@ int main(int argc, char *argv[]) {
           ans = send1(sPrintln, Int(42));                                                          printf(" => "); println(ans);
           ans = send1(sPrintln, nil);                                                              printf(" => "); println(ans);
           ans = send1(sPrintln, cons(Int(1), Int(2)));                                             printf(" => "); println(ans);
-          ans = send2(sAdd, Int(5), Int(6));                                                       printf(" => "); println(ans);
+          ans = send2(sSub,     Int(5), Int(6));                                                   printf(" => "); println(ans);
+          ans = send1(sPrintln, send1(sIdentityHash, cons(nil, nil)));                             printf(" => "); println(ans);
+          ans = send1(sPrintln, send1(sIdentityHash, Int(1234)));                                  printf(" => "); println(ans);
+  value_t sX = _p1(Intern, stringify("x"));
+  value_t sY = _p1(Intern, stringify("y"));
+  _p1(Push, cons(sX, sY));
+  value_t Point = _p3(MkClass, _p1(Intern, stringify("Point")), Obj, _p(Pop));
+  value_t p     = _p2(MkObj, Point, Int(0));
+  send2(sX, p, Int(1234));
+  send2(sY, p, Int(4321));
+  send1(sPrintln, p);
+  send2(sAdd, p, Int(5));
+  //_p(PrintOT);
   return 0;
 }
 
