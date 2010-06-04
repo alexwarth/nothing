@@ -41,13 +41,6 @@ value_t nil, stack, sp, globals, ipb, ip, fp, internedStringsRef,               
 #define Oop(X)              ((X) << 1)
 #define OopValue(X)         ({ value_t _x = X; if (debug) assert(isOop(_x)); _x >> 1; })
 
-void error(char *fmt, ...)  { va_list args;
-                              va_start(args, fmt);
-                              fprintf(stderr, "error: ");
-                              vfprintf(stderr, fmt, args);
-                              fputc('\n', stderr);
-                              exit(1); }
-
 typedef struct OTEntry { value_t numSlots, cls;
                          union { value_t *slots;
                                  struct OTEntry *next; } ptr;                               } OTEntry;
@@ -59,9 +52,20 @@ size_t OTSize = 0;
 OTEntry *OT, *freeList;
 byte_t *marked;
 
+void vprintf2(FILE *f, char *fmt, va_list args, value_t n = Int(5));
+
+void fprintf2(FILE *f, char *fmt, ...) { va_list args; va_start(args, fmt); vprintf2(f,      fmt, args); va_end(args); }
+void  printf2(         char *fmt, ...) { va_list args; va_start(args, fmt); vprintf2(stdout, fmt, args); va_end(args); }
+void dprintf2(         char *fmt, ...) { if (!debug) return;
+                                         va_list args; va_start(args, fmt); vprintf2(stderr, fmt, args); va_end(args); }
+void    error(         char *fmt, ...) { va_list args; va_start(args, fmt); fprintf2(stderr, "error: ");
+                                                                            vprintf2(stderr, fmt, args); va_end(args);
+                                         fprintf2(stderr, "\n");
+                                         exit(1); }
+
 void growOT(void) {
   size_t  newOTSize    = OTSize > 0 ? OTSize * 2 : OrigOTSize;
-  if (debug) printf("growOT, new size is %li\n", newOTSize);
+  dprintf2("growOT, new size is %o\n", Int(newOTSize));
   OTEntry *newOT       = allocate(newOTSize, OTEntry);
   byte_t  *newMarked   = allocate(newOTSize, byte_t);
   byte_t  *newIsGlobal = allocate(newOTSize, byte_t);
@@ -145,7 +149,7 @@ size_t gc(void) {
     OT[i].ptr.next = freeList;
     freeList       = &OT[i];
   }
-  if (debug) printf("GC reclaimed %ld OTEntries\n", OTSize - numMarked);
+  dprintf2("GC reclaimed %o OTEntries\n", Int(OTSize - numMarked));
   return OTSize - numMarked;
 }
 
@@ -163,24 +167,35 @@ value_t mk(size_t numSlots) {
   return Oop(newGuy - OT);
 }
 
-void _print(value_t v, value_t n = Int(0), value_t selIdx = Int(-1)) {
-  if      (v == nil) printf("nil");
-  else if (isInt(v)) printf("%d", IntValue(v));
-  else if (isOop(v)) { printf("[");
-                       if (IntValue(n) > 5) printf("...");
+void _print(FILE *f, value_t v, value_t n = Int(5), value_t selIdx = Int(-1)) {
+  if      (v == nil) fputs("nil", f);
+  else if (isInt(v)) fprintf(f, "%d", IntValue(v));
+  else if (isOop(v)) { fputc('[', f);
+                       if (IntValue(n) < 0) fputs("...", f);
                        else                 for (int i = 0; i < IntValue(numSlots(v)); i++) {
-                                              if (i > 0) printf(", ");
-                                              if (i == IntValue(selIdx)) printf("<<<");
-                                              _print(slotAt(v, Int(i)), Int(IntValue(n) + 1), -1);
-                                              if (i == IntValue(selIdx)) printf(">>>");
+                                              if (i > 0) fputs(", ", f);
+                                              if (i == IntValue(selIdx)) fputs("<<<", f);
+                                              _print(f, slotAt(v, Int(i)), Int(IntValue(n) - 1));
+                                              if (i == IntValue(selIdx)) fputs(">>>", f);
                                             }
-                       printf("]");
+                       fputc(']', f);
                      }
-  else               error("print doesn't know how to handle value (%d)\n", v);
+  else               error("print doesn't know how to handle value (%o)\n", Int(v));
 }
 
-void print(value_t v)   { _print(v);               }
-void println(value_t v) { print(v); putchar('\n'); }
+void vprintf2(FILE *f, char *fmt, va_list args, value_t n) {
+  while (1)
+    switch (*fmt) { case 0:   va_end(args); return;
+                    case '%': fmt++;
+                              switch (*fmt++) { case '%': fputc('%', f);                       break;
+                                                case 'o': _print(f, va_arg(args, value_t), n); break;
+                                                default:  fputc('%', f); fmt--; };
+                              break;
+                    default:  fputc(*fmt++, f); }
+}
+
+void print(value_t v)   { printf2("%o",   v); }
+void println(value_t v) { printf2("%o\n", v); }
 
 const size_t MaxNumPrims = 64;
 value_t (*prims[MaxNumPrims])(value_t);
@@ -296,7 +311,7 @@ Prim(ObjGetSet, recv,  { value_t nArgs = load(Int(1)); // the number of argument
                          switch (IntValue(nArgs)) {
                            case 1:  return slotAt   (recv, idx);
                            case 2:  return slotAtPut(recv, idx, deref(load(Int(-2))));
-                           default: error("getter/setter called with %d arguments (must be 1 or 2)", IntValue(nArgs));
+                           default: error("getter/setter called with %o arguments (must be 1 or 2)", nArgs);
                          } })
 
 Prim(DoPrim, n,        { value_t prim = _p(Pop);
@@ -345,7 +360,7 @@ Prim(StrPrint, s,     { int idx = 0;
                         }
                         return s; })
 
-Prim(Lookup, _,        { // the method cache should be implemented in "userland" (where this primitive will be replaced)
+Prim(Lookup, _,        { // note: the method cache will be implemented in "userland" (where this primitive will be replaced)
                          value_t recv = deref(load(Int(-1)));                            // unbox arg(1)
                          value_t sel  = deref(load(Int(0)));                             // unbox the selector
                          value_t cls  = classOf(recv);
@@ -360,7 +375,7 @@ Prim(Lookup, _,        { // the method cache should be implemented in "userland"
                            cls = _cls->super;
                          }
                          char *cStringify(value_t);
-                         error("%s does not understand \"%s\"", cStringify(asClass(classOf(recv))->name), cStringify(sel));
+                         error("%o does not understand \"%o\"", asClass(classOf(recv))->name, sel);
                          return nil; })
 
 Prim(Send, nArgs,      { fp = Int(IntValue(sp) - IntValue(nArgs) - 1);
@@ -378,20 +393,20 @@ Prim(JNZ, n,           { if (IntValue(_p(Pop)) != 0) _p1(Jmp, n); })
 Prim(Halt, _,          { })
 
 void printState(void) {
-  printf("ipb(ip="); print(ip); printf("): [");
+  printf2("ipb(ip=%o): [", ip);
   for (int idx = 0; idx < IntValue(numSlots(ipb)); idx++) {
-    if (idx > 0) printf(", ");
+    if (idx > 0) printf2(", ");
     value_t instr = slotAt(ipb, Int(idx)), prim = slotAt(instr, Int(0)), arg = slotAt(instr, Int(1));
-    if (idx == IntValue(ip)) printf("<<");
-    _p1(StrPrint, (value_t)primNames[IntValue(prim)]); putchar('('); print(arg); putchar(')');
-    if (idx == IntValue(ip)) printf(">>");
+    if (idx == IntValue(ip)) printf2("<<");
+    _p1(StrPrint, (value_t)primNames[IntValue(prim)]); printf2("(%o)", arg);
+    if (idx == IntValue(ip)) printf2(">>");
   }
-  printf("]\n");
-  printf("fp: "); println(fp);
-  printf("/---------------------------------------------------------------------\\\n");
+  printf2("]\n");
+  printf2("fp: %o\n", fp);
+  printf2("/---------------------------------------------------------------------\\\n");
   int spv = IntValue(sp);
-  while (spv-- > 0) { printf("  "); println(slotAt(stack, Int(spv))); }
-  printf("\\---------------------------------------------------------------------/\n");
+  while (spv-- > 0) { printf2("  %o", slotAt(stack, Int(spv))); }
+  printf2("\\---------------------------------------------------------------------/\n");
 }
 
 value_t interp(value_t prog, value_t retFp = Int(-1)) {
@@ -399,11 +414,11 @@ value_t interp(value_t prog, value_t retFp = Int(-1)) {
   ip  = Int(0);
   while (1) {
     value_t instr = slotAt(ipb, ip), primIdx = IntValue(car(instr)), op = cdr(instr);
-    if (debug) { puts("\n\n"); printState(); putchar('\n'); _p1(StrPrint, (value_t)primNames[primIdx]); putchar(' '); println(op); }
+    if (debug) { printf2("\n\n"); printState(); printf2("\n"); _p1(StrPrint, (value_t)primNames[primIdx]); printf2(" %o\n", op); }
     if (0 <= primIdx && primIdx < numPrims) prims[primIdx](op);
-    else                                    error("%d is not a valid primitive\n", primIdx);
+    else                                    error("%o is not a valid primitive\n", Int(primIdx));
     ip = Int(IntValue(ip) + 1);
-    if (debug) { putchar('\n'); printState(); printf("\n\n\n"); }
+    if (debug) { printf2("\n"); printState(); printf2("\n\n\n"); }
     if (primIdx == IntValue(Halt))
       break;
     else if (primIdx == IntValue(Ret) && fp == retFp) {
@@ -425,28 +440,28 @@ value_t interp(value_t prog, value_t retFp = Int(-1)) {
 Prim(ObjIdentityHash, recv, { return Int(recv); })
 Prim(IntIdentityHash, recv, { return Int(recv); })
 
-Prim(Newline,     _,    { putchar('\n');                                            }) // TODO: replace w/ more general Char>>print
+Prim(Newline,     _,    { putchar('\n');                                            }) // TODO: replace w/ Char>>print
 Prim(ObjPrint,    recv, { _p1(StrPrint, asClass(classOf(recv))->name); print(recv); })
-Prim(NilPrint,    recv, { printf("nil");                                            })
-Prim(IntPrint,    recv, { printf("%d", IntValue(recv));                             })
+Prim(NilPrint,    recv, { printf2("nil");                                           })
+Prim(IntPrint,    recv, { printf2("%o", IntValue(recv));                            })
 Prim(ObjPrintln,  recv, { send1(sPrint, recv); _p(Newline);                         })
 
 Prim(PrintOT,     _,    { for (int i = 0; i < OTSize; i++) {
                             OTEntry *e = &OT[i];
-                            printf("%d: ", i);
+                            printf2("%o: ", Int(i));
                             if (IntValue(e->numSlots) == -1) {
                               int next = e->ptr.next - OT;
-                              printf("(free, next=%d)\n", next >= 0 ? next : -1);
+                              printf2("(free, next=%o)\n", Int(next >= 0 ? next : -1));
                             }
                             else {
-                              _p1(StrPrint, asClass(e->cls)->name); printf("[");
+                              _p1(StrPrint, asClass(e->cls)->name); printf2("[");
                               for (int n = 0; n < IntValue(e->numSlots); n++) {
                                 value_t v = e->ptr.slots[n];
-                                if (n > 0) printf(", ");
-                                if (isInt(v)) printf("%d",   IntValue(v)); // ints are shown as 123
-                                else          printf("(%d)", OopValue(v)); // references are shown as (123)
+                                if (n > 0) printf2(", ");
+                                if (isInt(v)) printf2("%o",  v);                 // ints are shown as 123
+                                else          printf2("(%o)", Int(OopValue(v))); // references are shown as (123)
                               }
-                              printf("]\n");
+                              printf2("]\n");
                             }
                           } })
 
@@ -561,13 +576,13 @@ void init(int _debug) {
 
 int main(int argc, char *argv[]) {
   init(argc > 1);
-  value_t ans = send1(sPrintln, _p1(Intern, stringify("Object>>println and send macro worked!"))); printf(" => "); println(ans);
-          ans = send1(sPrintln, Int(42));                                                          printf(" => "); println(ans);
-          ans = send1(sPrintln, nil);                                                              printf(" => "); println(ans);
-          ans = send1(sPrintln, cons(Int(1), Int(2)));                                             printf(" => "); println(ans);
-          ans = send2(sSub,     Int(5), Int(6));                                                   printf(" => "); println(ans);
-          ans = send1(sPrintln, send1(sIdentityHash, cons(nil, nil)));                             printf(" => "); println(ans);
-          ans = send1(sPrintln, send1(sIdentityHash, Int(1234)));                                  printf(" => "); println(ans);
+  value_t ans = send1(sPrintln, _p1(Intern, stringify("Object>>println and send macro worked!"))); printf2(" => %o\n", ans);
+          ans = send1(sPrintln, Int(42));                                                          printf2(" => %o\n", ans);
+          ans = send1(sPrintln, nil);                                                              printf2(" => %o\n", ans);
+          ans = send1(sPrintln, cons(Int(1), Int(2)));                                             printf2(" => %o\n", ans);
+          ans = send2(sSub,     Int(5), Int(6));                                                   printf2(" => %o\n", ans);
+          ans = send1(sPrintln, send1(sIdentityHash, cons(nil, nil)));                             printf2(" => %o\n", ans);
+          ans = send1(sPrintln, send1(sIdentityHash, Int(1234)));                                  printf2(" => %o\n", ans);
   value_t sX = _p1(Intern, stringify("x"));
   value_t sY = _p1(Intern, stringify("y"));
   _p1(Push, cons(sX, sY));
