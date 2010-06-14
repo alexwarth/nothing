@@ -1,4 +1,4 @@
-CFLAGS = -std=c99 -Wall -ggdb
+CFLAGS = -std=c99 -Wall -ggdb -g3
 
 build : main
 
