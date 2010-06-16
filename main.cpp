@@ -396,7 +396,7 @@ PMeth(IntPrint,        { printf("%d", IntValue(recv));                          
 PMeth(StrPrint,        { for (int idx = 0; idx < IntValue(numSlots(recv)); idx++)
                            putchar(IntValue(slotAt(recv, Int(idx))));             })
 PMeth(ObjPrint,        { if (classOf(recv) == nil)
-                           printf("???");
+                           printf("???[");
                          else
                            printf2("%o[", asClass(classOf(recv))->name);
                          for (int i = 0; i < IntValue(numSlots(recv)); i++) {
