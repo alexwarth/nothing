@@ -4,6 +4,9 @@
 #include <string.h>
 #include <assert.h>
 
+// TODO: introduce threads: each thread holds onto a context (prio. 0)
+// TODO: exceptions (prio. 1)
+// TODO: continuations (prio. 2)
 // TODO: syntactic sugar: <- is a low-priority "there's another argument" next, e.g., myArray.at(5) <- 6
 // TODO: make a "CheapDictionary" class, use it for vtables, prims, globals, etc.
 // TODO: make everything OO (the OT, ref-cells used for FVs and args, etc.)
@@ -26,7 +29,7 @@ int debug = 0, initDone = 0;
 typedef unsigned char byte_t;
 typedef int           value_t;
 
-value_t nil, stack, sp, globals, ipb, ip, fp, internedStringsRef, chars,                 // registers, etc.
+value_t nil, stack, ipb, ip, fp, sp, globals, internedStringsRef, chars,                 // registers, etc.
         Obj, Nil, Int, Str, Var, Closure, Class,                                         // classes
         sIntern, sIdentityHash, sPrint, sPrintln, sAdd, sSub, sMul;                      // selectors
 
@@ -41,25 +44,28 @@ value_t nil, stack, sp, globals, ipb, ip, fp, internedStringsRef, chars,        
 #define OopValue(X)         ({ value_t _x = X; if (debug) assert(isOop(_x)); _x >> 1; })
 
 typedef struct OTEntry { value_t numSlots, cls;
+                         int isBinary;
                          union { value_t *slots;
-                                 struct OTEntry *next; } ptr;                               } OTEntry;
+                                 struct OTEntry *next; } ptr;                                                  } OTEntry;
 
-typedef struct         { value_t name, slotNames, numSlots, vTableSize, sels, impls, super; } classSlots;
+typedef struct         { value_t name, slotNames, numSlots, vTableSize, sels, impls, super;                    } classSlots;
+
+typedef struct         { value_t caller, code, ip, sp, fp; /* followed by stack: fvs, tmps, recv, args, ... */ } contextSlots;
 
 const size_t OrigOTSize = 2; // must be >= 2
 size_t OTSize = 0;
 OTEntry *OT, *freeList;
 byte_t *marked;
 
-void vprintf2(char *fmt, va_list args, value_t n = Int(5));
+void vprintf2(const char *fmt, va_list args, value_t n = Int(5));
 
-void  printf2(char *fmt, ...) { va_list args; va_start(args, fmt); vprintf2(fmt, args);                     va_end(args); }
-void dPrintf2(char *fmt, ...) { if (!debug) return;
-                                va_list args; va_start(args, fmt); vprintf2(fmt, args);                     va_end(args); }
-void    error(char *fmt, ...) { va_list args; va_start(args, fmt); printf2("error: "); vprintf2(fmt, args); va_end(args);
-                                printf2("\n"); exit(1); }
+void  printf2(const char *fmt, ...) { va_list args; va_start(args, fmt); vprintf2(fmt, args);                     va_end(args); }
+void dPrintf2(const char *fmt, ...) { if (!debug) return;
+                                      va_list args; va_start(args, fmt); vprintf2(fmt, args);                     va_end(args); }
+void    error(const char *fmt, ...) { va_list args; va_start(args, fmt); printf2("error: "); vprintf2(fmt, args); va_end(args);
+                                      printf2("\n"); exit(1); }
 
-#define dAssert(cond)        ({ if (debug) assert(cond); })
+#define dAssert(cond)              ({ if (debug) assert(cond); })
 
 void growOT(void) {
   size_t  newOTSize    = OTSize > 0 ? OTSize * 2 : OrigOTSize;
@@ -83,13 +89,13 @@ void growOT(void) {
 
 value_t mk(size_t numSlots);
 
-#define deref(r)                       slotAt   (r, Int(0))
-#define deref_(r, v)                   slotAtPut(r, Int(0), v)
+#define deref(r)                          slotAt   (r, Int(0))
+#define deref_(r, v)                      slotAtPut(r, Int(0), v)
 #define ref(a)                         ({ value_t _a = a, _r = mk(1); deref_(_r, _a); _r; })
-#define car(cc)                        slotAt   (cc, Int(0))
-#define car_(cc, v)                    slotAtPut(cc, Int(0), v)
-#define cdr(cc)                        slotAt   (cc, Int(1))
-#define cdr_(cc, v)                    slotAtPut(cc, Int(1), v)
+#define car(cc)                           slotAt   (cc, Int(0))
+#define car_(cc, v)                       slotAtPut(cc, Int(0), v)
+#define cdr(cc)                           slotAt   (cc, Int(1))
+#define cdr_(cc, v)                       slotAtPut(cc, Int(1), v)
 #define cons(a, b)                     ({ value_t _a = a, _b = b, _r = mk(2); car_(_r, _a); cdr_(_r, _b); _r; })
 
 #define slotAt(oop, idx)               ({ value_t _oop = OopValue(oop), _idx = IntValue(idx);             \
@@ -114,6 +120,11 @@ classSlots *asClass(value_t oop)        { dAssert(isOop(oop));
                                           dAssert(numSlots(oop) == Int(sizeof(classSlots) / sizeof(value_t)));
                                           return (classSlots *)slots(oop); }
 
+contextSlots *asContext(value_t oop)    { dAssert(isOop(oop));
+                                          // TODO: replace the following assert with an instanceof (or at least class) check
+                                          dAssert(numSlots(oop) > Int(sizeof(contextSlots) / sizeof(value_t)));
+                                          return (contextSlots *)slots(oop); }
+
 value_t addGlobal(value_t v)            { car_(globals, v);
                                           globals = cons(nil, globals);
                                           return v; }
@@ -125,6 +136,8 @@ int mark(value_t oop) {
   if (marked[otIdx])
     return 0;
   marked[otIdx] = 1;
+  if (OT[otIdx].isBinary)
+    return 1;
   size_t r = 1;
   OTEntry e = OT[otIdx];
   value_t *slot = e.ptr.slots;
@@ -160,7 +173,14 @@ value_t mk(size_t numSlots) {
   newGuy->numSlots  = Int(numSlots);
   newGuy->cls       = Obj;
   newGuy->ptr.slots = allocate(numSlots, value_t);
+  newGuy->isBinary  = 0;
   return Oop(newGuy - OT);
+}
+
+value_t mkBinary(size_t numWords) {
+  value_t r = mk(numWords);
+  OT[OopValue(r)].isBinary = 1;
+  return r;
 }
 
 const size_t MaxNumPrims = 64;
@@ -168,17 +188,17 @@ value_t (*prims[MaxNumPrims])(value_t);
 void *primNames[MaxNumPrims];
 size_t numPrims = 0;
 
-value_t addPrim(char *n, value_t (*f)(value_t)) { assert(numPrims < MaxNumPrims);
-                                                  prims[numPrims]     = f;
-                                                  primNames[numPrims] = n;
-                                                  return Int(numPrims++); }
+value_t addPrim(const char *n, value_t (*f)(value_t)) { assert(numPrims < MaxNumPrims);
+                                                        prims[numPrims]     = f;
+                                                        primNames[numPrims] = (void *)n;
+                                                        return Int(numPrims++); }
 
-value_t store(value_t offset, value_t v)        { return slotAtPut(stack, Int(IntValue(fp) - IntValue(offset)), v); }
-value_t load (value_t offset)                   { return slotAt   (stack, Int(IntValue(fp) - IntValue(offset)));    }
+value_t store(value_t offset, value_t v)              { return slotAtPut(stack, Int(IntValue(fp) - IntValue(offset)), v); }
+value_t load (value_t offset)                         { return slotAt   (stack, Int(IntValue(fp) - IntValue(offset)));    }
 
 value_t fsend1(value_t sel, value_t ecv);
 
-void vprintf2(char *fmt, va_list args, value_t n) {
+void vprintf2(const char *fmt, va_list args, value_t n) {
   int oldDebug = debug; debug = 0;
   while (1)
     switch (*fmt) { case 0:   va_end(args); debug = oldDebug; return;
@@ -206,11 +226,11 @@ void vprintf2(char *fmt, va_list args, value_t n) {
                     default:  putchar(*fmt++); }
 }
 
-#define Prim(Name, Arg, Body)             value_t p##Name(value_t Arg) { Body; return nil; } \
-                                          value_t Name = addPrim(#Name, p##Name);
-#define PMeth(Name, Body)                 Prim(Name, recv, Body)
+#define Prim(Name, Arg, Body)                value_t p##Name(value_t Arg) { Body; return nil; } \
+                                             value_t Name = addPrim(#Name, p##Name);
+#define PMeth(Name, Body)                    Prim(Name, recv, Body)
 
-#define _p(Name)                          _p1(Name, nil)
+#define _p(Name)                             _p1(Name, nil)
 #define _p1(Name, Arg)                    ({ prims[IntValue(Name)](Arg);                                                          })
 #define _p2(Name, Arg1, Arg2)             ({ _p1(Push, Arg2); _p1(Name, Arg1);                                                    })
 #define _p3(Name, Arg1, Arg2, Arg3)       ({ _p1(Push, Arg3); _p2(Name, Arg1, Arg2);                                              })
@@ -314,6 +334,13 @@ PMeth(ObjGetSet,       { value_t nArgs = load(Int(1)); // the number of argument
                            case 1:  return slotAt   (recv, idx);
                            case 2:  return slotAtPut(recv, idx, deref(load(Int(-2))));
                            default: error("getter/setter called with %o arguments (must be 1 or 2)", nArgs);
+                         } })
+
+PMeth(StrGetSet,       { value_t nArgs = load(Int(1)); // the number of arguments passed to the method, not the primitive
+                         value_t idx   = _p(Pop);
+                         switch (IntValue(nArgs)) {
+                           case 1:  return slotAt   (recv, idx);
+                           default: error("a string's setter was called, but strings are immutable");
                          } })
 
 Prim(DoPrim, n,        { value_t prim = _p(Pop);
@@ -472,7 +499,7 @@ PMeth(StrIntern, { value_t internedStrings = deref(internedStringsRef);
                    _p(Pop);
                    return recv; })
 
-value_t stringify(char *s) {
+value_t stringify(const char *s) {
   value_t r = _p1(Push, _p2(MkObj, Str, Int(strlen(s))));
   for (int idx = 0; *s != 0; idx++, s++)
     slotAtPut(r, Int(idx), Int(*s));
@@ -500,13 +527,13 @@ void init(int _debug) {
   growOT();
   nil     = mk(0);   // allocate nil before any other objects so it gets to be 0
   globals = cons(nil, nil);
-  stack   = addGlobal(mk(10240));
+  stack    = addGlobal(mk(sizeof(contextSlots) + 1024));
   internedStringsRef = addGlobal(ref(nil));
   chars = addGlobal(mk(256));
 
   // "objectify" primNames (they were C strings up to this point)
   for (int p = 0; p < numPrims; p++)
-    primNames[p] = (void *)_p1(StrIntern, stringify((char *)primNames[p]));
+    primNames[p] = (void *)_p1(StrIntern, stringify((const char *)primNames[p]));
   
   sIntern       = _p1(StrIntern, stringify("intern"));
   sIdentityHash = _p1(StrIntern, stringify("identityHash"));

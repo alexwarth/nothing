@@ -23,7 +23,7 @@ ometa BMLCompiler {
                               comp box (&anything comp box)*:args ]]       emit("cons(Call, Int(" + args.length + "))")
                    | { throw "compilation failed" },
   tcComp           = ['expr' [['atom' 'if']     comp
-                              blankInstr:jzIdx  tcComp                     emitAt(jzIdx,  "cons(JZ, Int("  + (this.ic() - jzIdx)      + "))")
+                              blankInstr:jzIdx  tcComp                     emitAt(jzIdx,  "cons(JZ,  Int(" + (this.ic() - jzIdx)      + "))")
                               blankInstr:jmpIdx tcComp   ]]                emitAt(jmpIdx, "cons(Jmp, Int(" + (this.ic() - jmpIdx - 1) + "))")
                    | ['expr' [~builtIn
                               comp box (&anything comp box)*:args ]]       emit("cons(TCall, Int(" + args.length + "))")
